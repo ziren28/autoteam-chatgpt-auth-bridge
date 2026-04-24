@@ -1,5 +1,7 @@
 import json
 import logging
+import threading
+import time
 
 from autoteam import api
 
@@ -434,3 +436,126 @@ def test_auto_check_logs_threshold_message_when_team_is_full_but_low_accounts_ar
 
     assert "低额度账号未达到触发阈值（1/2），且 Team 实际成员数已满足（5/5），无需轮转" in caplog.text
     assert "额度正常且 active 数充足（3/5），无需轮转" not in caplog.text
+
+
+def test_auto_check_triggers_cleanup_when_team_count_exceeds_target(tmp_path, monkeypatch):
+    auth_files = []
+    for idx in range(4):
+        auth_file = tmp_path / f"active-{idx}.json"
+        auth_file.write_text(json.dumps({"access_token": f"token-{idx}"}), encoding="utf-8")
+        auth_files.append(auth_file)
+
+    started = []
+
+    def fake_start_task(command, func, params, *args, **kwargs):
+        started.append(
+            {
+                "command": command,
+                "params": params,
+                "args": args,
+            }
+        )
+
+    monkeypatch.setattr(api, "_auto_check_config", {"interval": 0, "threshold": 10, "min_low": 2})
+    monkeypatch.setattr(api, "_auto_check_stop", __import__("threading").Event())
+    monkeypatch.setattr(api, "_auto_check_restart", __import__("threading").Event())
+    monkeypatch.setattr(api, "_is_main_account_email", lambda _email: False)
+    monkeypatch.setattr(
+        "autoteam.accounts.load_accounts",
+        lambda: [
+            {"email": f"active-{idx}@example.com", "status": "active", "auth_file": str(auth_files[idx])}
+            for idx in range(4)
+        ],
+    )
+
+    def fake_check_quota(token):
+        if token == "token-0":
+            return "ok", {"primary_pct": 99, "primary_resets_at": 1234567890, "weekly_pct": 1}
+        return "ok", {"primary_pct": 10, "primary_resets_at": 1234567890, "weekly_pct": 1}
+
+    monkeypatch.setattr("autoteam.codex_auth.check_codex_quota", fake_check_quota)
+    monkeypatch.setattr(api, "_auto_check_team_member_count", lambda: 6)
+    monkeypatch.setattr("autoteam.accounts.update_account", lambda *args, **kwargs: None)
+    monkeypatch.setattr(api, "_start_task", fake_start_task)
+
+    stop_event = api._auto_check_stop
+    wait_calls = {"count": 0}
+
+    def fake_wait(_seconds):
+        wait_calls["count"] += 1
+        return wait_calls["count"] > 1
+
+    monkeypatch.setattr(stop_event, "wait", fake_wait)
+
+    api._auto_check_loop()
+
+    assert len(started) == 1
+    assert started[0]["command"] == "auto-cleanup"
+    assert started[0]["params"]["max_seats"] == 5
+    assert started[0]["params"]["trigger"] == "auto-check"
+    assert started[0]["params"]["team_count"] == 6
+    assert started[0]["args"] == (5,)
+
+
+def test_auto_check_team_member_count_times_out_without_blocking(monkeypatch):
+    class _SlowChatGPT:
+        def __init__(self):
+            self.browser = True
+
+        def start(self):
+            time.sleep(0.2)
+
+        def stop(self):
+            self.browser = False
+
+    monkeypatch.setattr("autoteam.chatgpt_api.ChatGPTTeamAPI", _SlowChatGPT)
+    monkeypatch.setattr("autoteam.manager.get_team_member_count", lambda _chatgpt: 5)
+
+    started = time.monotonic()
+    result = api._auto_check_team_member_count(timeout_seconds=0.05, retries=1)
+    elapsed = time.monotonic() - started
+
+    assert result == -1
+    assert elapsed < 0.15
+
+
+def test_auto_check_team_member_count_retries_three_times_on_timeout(monkeypatch):
+    attempts = {"count": 0}
+
+    class _SlowChatGPT:
+        def __init__(self):
+            self.browser = True
+
+        def start(self):
+            attempts["count"] += 1
+            time.sleep(0.08)
+
+        def stop(self):
+            self.browser = False
+
+    monkeypatch.setattr("autoteam.chatgpt_api.ChatGPTTeamAPI", _SlowChatGPT)
+    monkeypatch.setattr("autoteam.manager.get_team_member_count", lambda _chatgpt: 5)
+
+    result = api._auto_check_team_member_count(timeout_seconds=0.01, retries=3)
+
+    assert result == -1
+    assert attempts["count"] == 3
+
+
+def test_auto_check_wait_returns_restart_soon_after_config_update(monkeypatch):
+    monkeypatch.setattr(api, "_auto_check_stop", threading.Event())
+    monkeypatch.setattr(api, "_auto_check_restart", threading.Event())
+
+    def trigger_restart():
+        time.sleep(0.05)
+        api._auto_check_restart.set()
+
+    thread = threading.Thread(target=trigger_restart, daemon=True)
+    thread.start()
+
+    started = time.monotonic()
+    result = api._auto_check_wait(5)
+    elapsed = time.monotonic() - started
+
+    assert result == "restart"
+    assert elapsed < 0.5

@@ -1602,25 +1602,81 @@ _auto_check_stop = threading.Event()
 _auto_check_restart = threading.Event()  # 配置变更时通知线程重启
 
 
-def _auto_check_team_member_count():
+def _auto_check_team_member_count(timeout_seconds=30, retries=3):
     """查询 Team 实际成员数，供自动巡检的人数兜底判断使用。"""
-    chatgpt = None
-    try:
-        from autoteam.chatgpt_api import ChatGPTTeamAPI
-        from autoteam.manager import get_team_member_count
+    for attempt in range(1, max(1, retries) + 1):
+        result_holder: dict[str, object] = {}
+        done = threading.Event()
 
-        chatgpt = ChatGPTTeamAPI()
-        chatgpt.start()
-        return get_team_member_count(chatgpt)
-    except Exception as exc:
-        logger.warning("[巡检] 查询 Team 实际成员数失败: %s", exc)
-        return -1
-    finally:
+        def _worker(result_holder=result_holder, done=done):
+            chatgpt = None
+            try:
+                from autoteam.chatgpt_api import ChatGPTTeamAPI
+                from autoteam.manager import get_team_member_count
+
+                chatgpt = ChatGPTTeamAPI()
+                chatgpt.start()
+                result_holder["count"] = get_team_member_count(chatgpt)
+            except Exception as exc:
+                result_holder["error"] = exc
+            finally:
+                try:
+                    if chatgpt and chatgpt.browser:
+                        chatgpt.stop()
+                except Exception:
+                    pass
+                done.set()
+
+        thread = threading.Thread(target=_worker, daemon=True)
+        thread.start()
+        if not done.wait(timeout=timeout_seconds):
+            if attempt < retries:
+                logger.warning(
+                    "[巡检] 查询 Team 实际成员数超时（>%ss），准备重试第 %d/%d 次",
+                    timeout_seconds,
+                    attempt + 1,
+                    retries,
+                )
+                continue
+            logger.warning(
+                "[巡检] 查询 Team 实际成员数超时（>%ss，已重试 %d 次），跳过本轮人数校验",
+                timeout_seconds,
+                retries,
+            )
+            return -1
+
+        if "error" in result_holder:
+            logger.warning("[巡检] 查询 Team 实际成员数失败: %s", result_holder["error"])
+            return -1
+
         try:
-            if chatgpt and chatgpt.browser:
-                chatgpt.stop()
+            return int(result_holder.get("count", -1))
         except Exception:
-            pass
+            return -1
+
+    return -1
+
+
+def _auto_check_wait(interval_seconds, poll_seconds=0.2):
+    """等待下一轮巡检，同时允许 stop / restart 尽快生效。"""
+    interval = max(0.0, float(interval_seconds))
+    poll = max(0.05, float(poll_seconds))
+    deadline = time.monotonic() + interval
+
+    while True:
+        if _auto_check_restart.is_set():
+            _auto_check_restart.clear()
+            return "restart"
+
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            if _auto_check_stop.wait(0):
+                return "stop"
+            return "timeout"
+
+        step = min(remaining, poll)
+        if _auto_check_stop.wait(step):
+            return "stop"
 
 
 def _auto_check_loop():
@@ -1640,10 +1696,10 @@ def _auto_check_loop():
         )
 
         # 等待 interval 秒，期间可被 restart 或 stop 唤醒
-        _auto_check_restart.clear()
-        if _auto_check_stop.wait(cfg["interval"]):
+        wait_result = _auto_check_wait(cfg["interval"])
+        if wait_result == "stop":
             break
-        if _auto_check_restart.is_set():
+        if wait_result == "restart":
             continue  # 配置变更，跳到下一轮重新读取配置
 
         try:
@@ -1687,79 +1743,100 @@ def _auto_check_loop():
 
             shortage = max(0, target_seats - local_active_count)
             actual_team_count = -1
+            team_count_check_failed = False
             trigger_rotate = len(low_accounts) >= cfg["min_low"]
-            if not trigger_rotate and shortage > 0:
+            trigger_cleanup = False
+
+            if not trigger_rotate:
                 actual_team_count = _auto_check_team_member_count()
-                if actual_team_count >= target_seats:
-                    logger.info(
-                        "[巡检] Team 实际成员数已满足（%d/%d），跳过基于 active 数的自动补位",
-                        actual_team_count,
-                        target_seats,
-                    )
+                if actual_team_count < 0:
+                    team_count_check_failed = True
+                elif actual_team_count > target_seats:
+                    trigger_cleanup = True
                     shortage = 0
-                elif actual_team_count >= 0:
+                else:
                     shortage = max(0, target_seats - actual_team_count)
                     trigger_rotate = shortage > 0
-                else:
-                    logger.warning(
-                        "[巡检] 当前 active 数不足 (%d/%d)，但 Team 成员数校验失败，暂不触发自动补位",
-                        local_active_count,
-                        target_seats,
-                    )
 
-            if trigger_rotate:
+            if trigger_rotate or trigger_cleanup:
                 # 检查是否有任务在跑
                 if not _playwright_lock.acquire(blocking=False):
-                    logger.info("[巡检] 有任务正在执行，跳过本轮自动轮转/补位")
+                    logger.info("[巡检] 有任务正在执行，跳过本轮自动轮转/补位/清理")
                     continue
                 _playwright_lock.release()
 
-                # 将低于阈值的账号标记为 exhausted，rotate 会自动移出并补充
-                from autoteam.accounts import STATUS_EXHAUSTED, update_account
-                from autoteam.codex_auth import quota_result_quota_info, quota_result_resets_at
+                if trigger_rotate:
+                    # 将低于阈值的账号标记为 exhausted，rotate 会自动移出并补充
+                    from autoteam.accounts import STATUS_EXHAUSTED, update_account
+                    from autoteam.codex_auth import quota_result_quota_info, quota_result_resets_at
 
-                for email, remaining, status, info in low_accounts:
-                    logger.info("[巡检] %s 剩余 %d%%，标记为 exhausted", email, remaining)
-                    status_kwargs = {
-                        "status": STATUS_EXHAUSTED,
-                        "quota_exhausted_at": time.time(),
-                    }
-                    if status == "ok":
-                        status_kwargs["last_quota"] = info if isinstance(info, dict) else None
-                        status_kwargs["quota_resets_at"] = (
-                            info.get("primary_resets_at") if isinstance(info, dict) else None
-                        ) or int(time.time() + 18000)
+                    for email, remaining, status, info in low_accounts:
+                        logger.info("[巡检] %s 剩余 %d%%，标记为 exhausted", email, remaining)
+                        status_kwargs = {
+                            "status": STATUS_EXHAUSTED,
+                            "quota_exhausted_at": time.time(),
+                        }
+                        if status == "ok":
+                            status_kwargs["last_quota"] = info if isinstance(info, dict) else None
+                            status_kwargs["quota_resets_at"] = (
+                                info.get("primary_resets_at") if isinstance(info, dict) else None
+                            ) or int(time.time() + 18000)
+                        else:
+                            status_kwargs["last_quota"] = quota_result_quota_info(info)
+                            status_kwargs["quota_resets_at"] = quota_result_resets_at(info) or int(time.time() + 18000)
+                        update_account(email, **status_kwargs)
+
+                    if shortage > 0 and len(low_accounts) >= cfg["min_low"]:
+                        logger.info(
+                            "[巡检] 当前 active 数不足: %d/%d，且检测到低额度账号，触发自动轮转...",
+                            local_active_count,
+                            target_seats,
+                        )
+                    elif shortage > 0:
+                        logger.info(
+                            "[巡检] Team 实际成员数不足（%d/%d），触发自动补位...",
+                            actual_team_count,
+                            target_seats,
+                        )
                     else:
-                        status_kwargs["last_quota"] = quota_result_quota_info(info)
-                        status_kwargs["quota_resets_at"] = quota_result_resets_at(info) or int(time.time() + 18000)
-                    update_account(email, **status_kwargs)
+                        logger.info("[巡检] 触发自动轮转...")
+                    from autoteam.manager import cmd_rotate
 
-                if shortage > 0 and len(low_accounts) >= cfg["min_low"]:
-                    logger.info(
-                        "[巡检] 当前 active 数不足: %d/%d，且检测到低额度账号，触发自动轮转...",
-                        local_active_count,
-                        target_seats,
-                    )
-                elif shortage > 0:
-                    logger.info("[巡检] 当前 active 数不足: %d/%d，触发自动补位...", local_active_count, target_seats)
+                    try:
+                        _start_task(
+                            "auto-rotate",
+                            cmd_rotate,
+                            {
+                                "target": target_seats,
+                                "trigger": "auto-check",
+                                "shortage": shortage,
+                                "low_accounts": len(low_accounts),
+                            },
+                            target_seats,
+                        )
+                    except Exception as e:
+                        logger.error("[巡检] 自动轮转失败: %s", e)
                 else:
-                    logger.info("[巡检] 触发自动轮转...")
-                from autoteam.manager import cmd_rotate
-
-                try:
-                    _start_task(
-                        "auto-rotate",
-                        cmd_rotate,
-                        {
-                            "target": target_seats,
-                            "trigger": "auto-check",
-                            "shortage": shortage,
-                            "low_accounts": len(low_accounts),
-                        },
+                    logger.info(
+                        "[巡检] Team 实际成员数超出目标（%d/%d），触发自动清理...",
+                        actual_team_count,
                         target_seats,
                     )
-                except Exception as e:
-                    logger.error("[巡检] 自动轮转失败: %s", e)
+                    from autoteam.manager import cmd_cleanup
+
+                    try:
+                        _start_task(
+                            "auto-cleanup",
+                            cmd_cleanup,
+                            {
+                                "max_seats": target_seats,
+                                "trigger": "auto-check",
+                                "team_count": actual_team_count,
+                            },
+                            target_seats,
+                        )
+                    except Exception as e:
+                        logger.error("[巡检] 自动清理失败: %s", e)
             else:
                 if low_accounts and actual_team_count >= target_seats:
                     logger.info(
@@ -1774,6 +1851,16 @@ def _auto_check_loop():
                         "[巡检] 低额度账号未达到触发阈值（%d/%d），无需轮转",
                         len(low_accounts),
                         cfg["min_low"],
+                    )
+                elif team_count_check_failed:
+                    logger.info("[巡检] Team 成员数校验失败，且未达到低额度触发阈值，跳过本轮自动动作")
+                elif actual_team_count >= target_seats and local_active_count < target_seats:
+                    logger.info(
+                        "[巡检] Team 实际成员数已满足（%d/%d），当前本地 active=%d/%d，无需补位",
+                        actual_team_count,
+                        target_seats,
+                        local_active_count,
+                        target_seats,
                     )
                 else:
                     logger.info("[巡检] 额度正常且 active 数充足（%d/%d），无需轮转", local_active_count, target_seats)
