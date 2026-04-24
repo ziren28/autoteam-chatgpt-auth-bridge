@@ -437,6 +437,65 @@ def test_auto_check_logs_threshold_message_when_team_is_full_but_low_accounts_ar
     assert "额度正常且 active 数充足（3/5），无需轮转" not in caplog.text
 
 
+def test_auto_check_triggers_cleanup_when_team_count_exceeds_target(tmp_path, monkeypatch):
+    auth_files = []
+    for idx in range(4):
+        auth_file = tmp_path / f"active-{idx}.json"
+        auth_file.write_text(json.dumps({"access_token": f"token-{idx}"}), encoding="utf-8")
+        auth_files.append(auth_file)
+
+    started = []
+
+    def fake_start_task(command, func, params, *args, **kwargs):
+        started.append(
+            {
+                "command": command,
+                "params": params,
+                "args": args,
+            }
+        )
+
+    monkeypatch.setattr(api, "_auto_check_config", {"interval": 0, "threshold": 10, "min_low": 2})
+    monkeypatch.setattr(api, "_auto_check_stop", __import__("threading").Event())
+    monkeypatch.setattr(api, "_auto_check_restart", __import__("threading").Event())
+    monkeypatch.setattr(api, "_is_main_account_email", lambda _email: False)
+    monkeypatch.setattr(
+        "autoteam.accounts.load_accounts",
+        lambda: [
+            {"email": f"active-{idx}@example.com", "status": "active", "auth_file": str(auth_files[idx])}
+            for idx in range(4)
+        ],
+    )
+
+    def fake_check_quota(token):
+        if token == "token-0":
+            return "ok", {"primary_pct": 99, "primary_resets_at": 1234567890, "weekly_pct": 1}
+        return "ok", {"primary_pct": 10, "primary_resets_at": 1234567890, "weekly_pct": 1}
+
+    monkeypatch.setattr("autoteam.codex_auth.check_codex_quota", fake_check_quota)
+    monkeypatch.setattr(api, "_auto_check_team_member_count", lambda: 6)
+    monkeypatch.setattr("autoteam.accounts.update_account", lambda *args, **kwargs: None)
+    monkeypatch.setattr(api, "_start_task", fake_start_task)
+
+    stop_event = api._auto_check_stop
+    wait_calls = {"count": 0}
+
+    def fake_wait(_seconds):
+        wait_calls["count"] += 1
+        return wait_calls["count"] > 1
+
+    monkeypatch.setattr(stop_event, "wait", fake_wait)
+
+    api._auto_check_loop()
+
+    assert len(started) == 1
+    assert started[0]["command"] == "auto-cleanup"
+    assert started[0]["params"]["max_seats"] == 5
+    assert started[0]["params"]["trigger"] == "auto-check"
+    assert started[0]["params"]["team_count"] == 6
+    assert started[0]["args"] == (5,)
+
+
 def test_auto_check_team_member_count_times_out_without_blocking(monkeypatch):
     class _SlowChatGPT:
         def __init__(self):
