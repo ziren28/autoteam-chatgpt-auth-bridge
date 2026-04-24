@@ -1602,7 +1602,7 @@ _auto_check_stop = threading.Event()
 _auto_check_restart = threading.Event()  # 配置变更时通知线程重启
 
 
-def _auto_check_team_member_count(timeout_seconds=20, retries=3):
+def _auto_check_team_member_count(timeout_seconds=30, retries=3):
     """查询 Team 实际成员数，供自动巡检的人数兜底判断使用。"""
     for attempt in range(1, max(1, retries) + 1):
         result_holder: dict[str, object] = {}
