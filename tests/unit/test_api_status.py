@@ -1,5 +1,6 @@
 import json
 import logging
+import threading
 import time
 
 from autoteam import api
@@ -539,3 +540,22 @@ def test_auto_check_team_member_count_retries_three_times_on_timeout(monkeypatch
 
     assert result == -1
     assert attempts["count"] == 3
+
+
+def test_auto_check_wait_returns_restart_soon_after_config_update(monkeypatch):
+    monkeypatch.setattr(api, "_auto_check_stop", threading.Event())
+    monkeypatch.setattr(api, "_auto_check_restart", threading.Event())
+
+    def trigger_restart():
+        time.sleep(0.05)
+        api._auto_check_restart.set()
+
+    thread = threading.Thread(target=trigger_restart, daemon=True)
+    thread.start()
+
+    started = time.monotonic()
+    result = api._auto_check_wait(5)
+    elapsed = time.monotonic() - started
+
+    assert result == "restart"
+    assert elapsed < 0.5

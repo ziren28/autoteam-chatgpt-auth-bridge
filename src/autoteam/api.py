@@ -1657,6 +1657,28 @@ def _auto_check_team_member_count(timeout_seconds=30, retries=3):
     return -1
 
 
+def _auto_check_wait(interval_seconds, poll_seconds=0.2):
+    """等待下一轮巡检，同时允许 stop / restart 尽快生效。"""
+    interval = max(0.0, float(interval_seconds))
+    poll = max(0.05, float(poll_seconds))
+    deadline = time.monotonic() + interval
+
+    while True:
+        if _auto_check_restart.is_set():
+            _auto_check_restart.clear()
+            return "restart"
+
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            if _auto_check_stop.wait(0):
+                return "stop"
+            return "timeout"
+
+        step = min(remaining, poll)
+        if _auto_check_stop.wait(step):
+            return "stop"
+
+
 def _auto_check_loop():
     """后台巡检线程：定期检查额度，多个账号低于阈值时自动轮转"""
     from autoteam.accounts import STATUS_ACTIVE, load_accounts
@@ -1674,10 +1696,10 @@ def _auto_check_loop():
         )
 
         # 等待 interval 秒，期间可被 restart 或 stop 唤醒
-        _auto_check_restart.clear()
-        if _auto_check_stop.wait(cfg["interval"]):
+        wait_result = _auto_check_wait(cfg["interval"])
+        if wait_result == "stop":
             break
-        if _auto_check_restart.is_set():
+        if wait_result == "restart":
             continue  # 配置变更，跳到下一轮重新读取配置
 
         try:
