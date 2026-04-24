@@ -1602,25 +1602,44 @@ _auto_check_stop = threading.Event()
 _auto_check_restart = threading.Event()  # 配置变更时通知线程重启
 
 
-def _auto_check_team_member_count():
+def _auto_check_team_member_count(timeout_seconds=45):
     """查询 Team 实际成员数，供自动巡检的人数兜底判断使用。"""
-    chatgpt = None
-    try:
-        from autoteam.chatgpt_api import ChatGPTTeamAPI
-        from autoteam.manager import get_team_member_count
+    result_holder: dict[str, object] = {}
+    done = threading.Event()
 
-        chatgpt = ChatGPTTeamAPI()
-        chatgpt.start()
-        return get_team_member_count(chatgpt)
-    except Exception as exc:
-        logger.warning("[巡检] 查询 Team 实际成员数失败: %s", exc)
-        return -1
-    finally:
+    def _worker():
+        chatgpt = None
         try:
-            if chatgpt and chatgpt.browser:
-                chatgpt.stop()
-        except Exception:
-            pass
+            from autoteam.chatgpt_api import ChatGPTTeamAPI
+            from autoteam.manager import get_team_member_count
+
+            chatgpt = ChatGPTTeamAPI()
+            chatgpt.start()
+            result_holder["count"] = get_team_member_count(chatgpt)
+        except Exception as exc:
+            result_holder["error"] = exc
+        finally:
+            try:
+                if chatgpt and chatgpt.browser:
+                    chatgpt.stop()
+            except Exception:
+                pass
+            done.set()
+
+    thread = threading.Thread(target=_worker, daemon=True)
+    thread.start()
+    if not done.wait(timeout=timeout_seconds):
+        logger.warning("[巡检] 查询 Team 实际成员数超时（>%ss），跳过本轮人数校验", timeout_seconds)
+        return -1
+
+    if "error" in result_holder:
+        logger.warning("[巡检] 查询 Team 实际成员数失败: %s", result_holder["error"])
+        return -1
+
+    try:
+        return int(result_holder.get("count", -1))
+    except Exception:
+        return -1
 
 
 def _auto_check_loop():

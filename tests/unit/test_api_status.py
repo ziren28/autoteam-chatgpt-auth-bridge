@@ -1,5 +1,6 @@
 import json
 import logging
+import time
 
 from autoteam import api
 
@@ -434,3 +435,25 @@ def test_auto_check_logs_threshold_message_when_team_is_full_but_low_accounts_ar
 
     assert "低额度账号未达到触发阈值（1/2），且 Team 实际成员数已满足（5/5），无需轮转" in caplog.text
     assert "额度正常且 active 数充足（3/5），无需轮转" not in caplog.text
+
+
+def test_auto_check_team_member_count_times_out_without_blocking(monkeypatch):
+    class _SlowChatGPT:
+        def __init__(self):
+            self.browser = True
+
+        def start(self):
+            time.sleep(0.2)
+
+        def stop(self):
+            self.browser = False
+
+    monkeypatch.setattr("autoteam.chatgpt_api.ChatGPTTeamAPI", _SlowChatGPT)
+    monkeypatch.setattr("autoteam.manager.get_team_member_count", lambda _chatgpt: 5)
+
+    started = time.monotonic()
+    result = api._auto_check_team_member_count(timeout_seconds=0.05)
+    elapsed = time.monotonic() - started
+
+    assert result == -1
+    assert elapsed < 0.15
