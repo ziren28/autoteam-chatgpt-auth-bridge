@@ -79,73 +79,145 @@ class SetupConfig(BaseModel):
     API_KEY: str = ""
 
 
-@app.get("/api/setup/status")
-def get_setup_status():
-    """检查配置是否完整"""
+_RUNTIME_CONFIG_CLEARABLE_FIELDS = {
+    "PLAYWRIGHT_PROXY_URL",
+    "PLAYWRIGHT_PROXY_BYPASS",
+}
+
+
+def _collect_config_fields(*, include_values: bool = False):
     from autoteam.setup_wizard import REQUIRED_CONFIGS, _read_env
 
     env = _read_env()
     fields = []
     all_ok = True
     for key, prompt, default, optional in REQUIRED_CONFIGS:
-        val = env.get(key, "") or os.environ.get(key, "")
-        ok = bool(val)
-        if not ok and not optional:
+        raw_value = env.get(key, "") or os.environ.get(key, "")
+        configured = bool(raw_value)
+        if not configured and not optional:
             all_ok = False
-        fields.append({"key": key, "prompt": prompt, "default": default, "optional": optional, "configured": ok})
+
+        field = {
+            "key": key,
+            "prompt": prompt,
+            "default": default,
+            "optional": optional,
+            "configured": configured,
+        }
+        if include_values:
+            field["value"] = raw_value or (default if key == "CPA_URL" else "")
+        fields.append(field)
     return {"configured": all_ok, "fields": fields}
+
+
+def _reload_runtime_config_modules():
+    import importlib
+
+    import autoteam.config
+
+    modules = [autoteam.config]
+    for module_name in ("autoteam.cloudmail", "autoteam.cpa_sync"):
+        try:
+            module = importlib.import_module(module_name)
+        except Exception:
+            continue
+        modules.append(module)
+
+    for module in modules:
+        importlib.reload(module)
+
+
+def _restore_runtime_env(previous_env: dict[str, str | None]):
+    for key, previous in previous_env.items():
+        if previous is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = previous
+
+
+def _save_runtime_config(data: dict[str, str]):
+    """保存运行时配置到 .env，并在当前进程立即生效。"""
+    import secrets as _secrets
+
+    from autoteam.setup_wizard import REQUIRED_CONFIGS, _verify_cloudmail, _verify_cpa, _write_env
+
+    defaults = {key: default for key, _prompt, default, _optional in REQUIRED_CONFIGS}
+    env_keys = [key for key, _prompt, _default, _optional in REQUIRED_CONFIGS]
+    existing = {key: os.environ.get(key, "") for key in env_keys}
+    merged = {key: data.get(key, existing.get(key, "")) for key in env_keys}
+
+    if not merged.get("CPA_URL"):
+        merged["CPA_URL"] = defaults.get("CPA_URL", "http://127.0.0.1:8317")
+    if not merged.get("API_KEY"):
+        merged["API_KEY"] = _secrets.token_urlsafe(24)
+
+    missing = [
+        f"{key} ({prompt})"
+        for key, prompt, _default, optional in REQUIRED_CONFIGS
+        if not optional and not merged.get(key)
+    ]
+    if missing:
+        return JSONResponse(
+            status_code=400,
+            content={"message": "缺少必填项: " + "、".join(missing)},
+        )
+
+    previous_env = {key: os.environ.get(key) for key in env_keys}
+    try:
+        for key, value in merged.items():
+            os.environ[key] = value
+        _reload_runtime_config_modules()
+
+        errors = []
+        if not _verify_cloudmail():
+            errors.append("CloudMail 连接失败")
+        if not _verify_cpa():
+            errors.append("CPA 连接失败")
+
+        if errors:
+            _restore_runtime_env(previous_env)
+            _reload_runtime_config_modules()
+            return JSONResponse(
+                status_code=400,
+                content={"message": "、".join(errors), "api_key": previous_env.get("API_KEY", "") or ""},
+            )
+
+        for key, value in merged.items():
+            if value or key in _RUNTIME_CONFIG_CLEARABLE_FIELDS:
+                _write_env(key, value)
+
+        global API_KEY
+        API_KEY = merged["API_KEY"]
+
+        return {"message": "配置保存成功", "api_key": merged["API_KEY"], "configured": True}
+    except Exception:
+        _restore_runtime_env(previous_env)
+        _reload_runtime_config_modules()
+        raise
+
+
+@app.get("/api/setup/status")
+def get_setup_status():
+    """检查配置是否完整"""
+    return _collect_config_fields()
 
 
 @app.post("/api/setup/save")
 def post_setup_save(config: SetupConfig):
     """保存配置到 .env 并验证连通性"""
-    import secrets as _secrets
+    return _save_runtime_config(config.model_dump())
 
-    from autoteam.setup_wizard import REQUIRED_CONFIGS, _write_env
 
-    data = config.model_dump()
-    defaults = {key: default for key, _prompt, default, _optional in REQUIRED_CONFIGS}
-    if not data.get("CPA_URL"):
-        data["CPA_URL"] = defaults.get("CPA_URL", "http://127.0.0.1:8317")
-    if not data.get("API_KEY"):
-        data["API_KEY"] = _secrets.token_urlsafe(24)
+@app.get("/api/config/runtime")
+def get_runtime_config():
+    """获取当前运行时配置，供登录后的设置面板编辑。"""
+    return _collect_config_fields(include_values=True)
 
-    clearable_fields = {"PLAYWRIGHT_PROXY_URL", "PLAYWRIGHT_PROXY_BYPASS"}
-    for key, value in data.items():
-        if value or key in clearable_fields:
-            _write_env(key, value)
-            os.environ[key] = value
 
-    # 重新加载模块
-    import importlib
-
-    import autoteam.config
-
-    importlib.reload(autoteam.config)
-    try:
-        import autoteam.cloudmail
-
-        importlib.reload(autoteam.cloudmail)
-    except Exception:
-        pass
-
-    # 验证连通性
-    errors = []
-    from autoteam.setup_wizard import _verify_cloudmail, _verify_cpa
-
-    if not _verify_cloudmail():
-        errors.append("CloudMail 连接失败")
-    if not _verify_cpa():
-        errors.append("CPA 连接失败")
-
-    if errors:
-        return JSONResponse(status_code=400, content={"message": "、".join(errors), "api_key": data["API_KEY"]})
-
-    # 更新运行时 API_KEY
-    global API_KEY
-    API_KEY = data["API_KEY"]
-
-    return {"message": "配置保存成功", "api_key": data["API_KEY"], "configured": True}
+@app.put("/api/config/runtime")
+def put_runtime_config(config: SetupConfig):
+    """登录后修改 CloudMail / CPA / 代理等运行时配置。"""
+    return _save_runtime_config(config.model_dump())
 
 
 # ---------------------------------------------------------------------------
@@ -1945,6 +2017,7 @@ class _QuietAccessLog(logging.Filter):
         "/api/status",
         "/api/tasks",
         "/api/config/auto-check",
+        "/api/config/runtime",
         "/api/admin/status",
         "/api/main-codex/status",
         "/api/manual-account/status",

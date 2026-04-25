@@ -46,6 +46,8 @@
       <Dashboard v-if="currentPage === 'dashboard'"
         :status="status" :loading="loading" :running-task="busyTask" :admin-status="adminStatus" @refresh="refresh" />
 
+      <ConfigPage v-else-if="currentPage === 'config'" @refresh="refresh" />
+
       <TeamMembers v-else-if="currentPage === 'team'" />
 
       <PoolPage v-else-if="currentPage === 'pool'"
@@ -77,6 +79,7 @@ import { api, setApiKey, clearApiKey } from './api.js'
 import SetupPage from './components/SetupPage.vue'
 import Sidebar from './components/Sidebar.vue'
 import Dashboard from './components/Dashboard.vue'
+import ConfigPage from './components/ConfigPage.vue'
 import TeamMembers from './components/TeamMembers.vue'
 import PoolPage from './components/PoolPage.vue'
 import SyncPage from './components/SyncPage.vue'

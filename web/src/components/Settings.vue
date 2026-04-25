@@ -456,16 +456,7 @@ watch(
 )
 
 onMounted(async () => {
-  try {
-    const cfg = await api.getAutoCheckConfig()
-    form.value = {
-      interval: Math.round(cfg.interval / 60),
-      threshold: cfg.threshold,
-      min_low: cfg.min_low,
-    }
-  } catch (e) {
-    console.error('加载巡检配置失败:', e)
-  }
+  await loadAutoCheckConfig()
 })
 
 function setMessage(text, type = 'success') {
@@ -477,6 +468,19 @@ function setMessage(text, type = 'success') {
   setMessage._timer = window.setTimeout(() => {
     message.value = ''
   }, 8000)
+}
+
+async function loadAutoCheckConfig() {
+  try {
+    const cfg = await api.getAutoCheckConfig()
+    form.value = {
+      interval: Math.round(cfg.interval / 60),
+      threshold: cfg.threshold,
+      min_low: cfg.min_low,
+    }
+  } catch (e) {
+    console.error('加载巡检配置失败:', e)
+  }
 }
 
 async function startLogin() {

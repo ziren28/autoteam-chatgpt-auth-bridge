@@ -107,6 +107,50 @@ def test_post_setup_save_keeps_cpa_url_required_and_generates_api_key(monkeypatc
     assert api.API_KEY == "generated-token"
 
 
+def test_get_runtime_config_returns_current_values_from_env_file(tmp_path, monkeypatch):
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "CLOUDMAIL_BASE_URL=http://mail.example.com",
+                "CLOUDMAIL_EMAIL=admin@example.com",
+                "CLOUDMAIL_PASSWORD=secret",
+                "CLOUDMAIL_DOMAIN=@example.com",
+                "CPA_URL=http://127.0.0.1:8317",
+                "CPA_KEY=key-1",
+                "PLAYWRIGHT_PROXY_URL=socks5://127.0.0.1:1080",
+                "PLAYWRIGHT_PROXY_BYPASS=localhost,127.0.0.1",
+                "API_KEY=runtime-key",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr("autoteam.setup_wizard.ENV_FILE", env_file)
+    for key in (
+        "CLOUDMAIL_BASE_URL",
+        "CLOUDMAIL_EMAIL",
+        "CLOUDMAIL_PASSWORD",
+        "CLOUDMAIL_DOMAIN",
+        "CPA_URL",
+        "CPA_KEY",
+        "PLAYWRIGHT_PROXY_URL",
+        "PLAYWRIGHT_PROXY_BYPASS",
+        "API_KEY",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    result = api.get_runtime_config()
+    fields = {field["key"]: field for field in result["fields"]}
+
+    assert result["configured"] is True
+    assert fields["CLOUDMAIL_EMAIL"]["value"] == "admin@example.com"
+    assert fields["CPA_KEY"]["value"] == "key-1"
+    assert fields["PLAYWRIGHT_PROXY_URL"]["value"] == "socks5://127.0.0.1:1080"
+    assert fields["PLAYWRIGHT_PROXY_BYPASS"]["value"] == "localhost,127.0.0.1"
+    assert fields["API_KEY"]["value"] == "runtime-key"
+
+
 def test_auto_check_persists_reuse_blocking_metadata_before_rotate(tmp_path, monkeypatch):
     low_auth = tmp_path / "low.json"
     exhausted_auth = tmp_path / "exhausted.json"
