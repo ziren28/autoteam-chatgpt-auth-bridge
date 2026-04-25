@@ -93,7 +93,7 @@ def test_post_setup_save_only_requires_api_key_and_generates_one(monkeypatch):
         written[key] = value
 
     monkeypatch.setattr("autoteam.setup_wizard._write_env", fake_write_env)
-    monkeypatch.setattr("autoteam.setup_wizard._verify_cloudmail", lambda: True)
+    monkeypatch.setattr("autoteam.setup_wizard._verify_mail_provider", lambda provider=None: True)
     monkeypatch.setattr("autoteam.setup_wizard._verify_cpa", lambda: True)
     monkeypatch.setattr("secrets.token_urlsafe", lambda _n: "generated-token")
     monkeypatch.setattr("importlib.reload", lambda module: module)
@@ -196,6 +196,47 @@ def test_get_runtime_config_returns_current_values_from_env_file(tmp_path, monke
     assert fields["API_KEY"]["runtime_required"] is True
 
 
+def test_get_runtime_config_switches_required_mail_fields_by_provider(tmp_path, monkeypatch):
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "MAIL_PROVIDER=cloudflare_temp_email",
+                "CF_TEMP_EMAIL_BASE_URL=https://tempmail.example.com/admin",
+                "CF_TEMP_EMAIL_ADMIN_PASSWORD=secret",
+                "CF_TEMP_EMAIL_DOMAIN=example.com",
+                "API_KEY=runtime-key",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr("autoteam.setup_wizard.ENV_FILE", env_file)
+    for key in (
+        "MAIL_PROVIDER",
+        "CF_TEMP_EMAIL_BASE_URL",
+        "CF_TEMP_EMAIL_ADMIN_PASSWORD",
+        "CF_TEMP_EMAIL_DOMAIN",
+        "CLOUDMAIL_BASE_URL",
+        "CLOUDMAIL_EMAIL",
+        "CLOUDMAIL_PASSWORD",
+        "CLOUDMAIL_DOMAIN",
+        "API_KEY",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    result = api.get_runtime_config()
+    fields = {field["key"]: field for field in result["fields"]}
+
+    assert result["configured"] is True
+    assert fields["MAIL_PROVIDER"]["value"] == "cloudflare_temp_email"
+    assert fields["CF_TEMP_EMAIL_BASE_URL"]["runtime_required"] is True
+    assert fields["CF_TEMP_EMAIL_ADMIN_PASSWORD"]["runtime_required"] is True
+    assert fields["CF_TEMP_EMAIL_DOMAIN"]["runtime_required"] is True
+    assert fields["CLOUDMAIL_BASE_URL"]["runtime_required"] is False
+    assert fields["CLOUDMAIL_EMAIL"]["runtime_required"] is False
+
+
 def test_put_runtime_config_allows_partial_runtime_fields_when_api_key_exists(monkeypatch):
     written = {}
 
@@ -204,8 +245,8 @@ def test_put_runtime_config_allows_partial_runtime_fields_when_api_key_exists(mo
 
     monkeypatch.setattr("autoteam.setup_wizard._write_env", fake_write_env)
     monkeypatch.setattr(
-        "autoteam.setup_wizard._verify_cloudmail",
-        lambda: (_ for _ in ()).throw(AssertionError("cloudmail verify should not run")),
+        "autoteam.setup_wizard._verify_mail_provider",
+        lambda provider=None: (_ for _ in ()).throw(AssertionError("mail provider verify should not run")),
     )
     monkeypatch.setattr(
         "autoteam.setup_wizard._verify_cpa",
@@ -426,7 +467,7 @@ def test_put_runtime_config_source_applies_env_and_updates_api_key(tmp_path, mon
 
     monkeypatch.setattr("autoteam.setup_wizard.ENV_FILE", env_file)
     monkeypatch.setattr("autoteam.setup_wizard.ENV_EXAMPLE", tmp_path / ".env.example")
-    monkeypatch.setattr("autoteam.setup_wizard._verify_cloudmail", lambda: True)
+    monkeypatch.setattr("autoteam.setup_wizard._verify_mail_provider", lambda provider=None: True)
     monkeypatch.setattr("autoteam.setup_wizard._verify_cpa", lambda: True)
     monkeypatch.setattr("importlib.reload", lambda module: module)
     monkeypatch.setattr(api, "API_KEY", "old-key")

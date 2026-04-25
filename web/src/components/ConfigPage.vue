@@ -10,7 +10,7 @@
           </div>
           <h2 class="section-heading">配置面板</h2>
           <p class="section-subtitle max-w-2xl">
-            按 CloudMail、远端同步、代理、安全、管理员、巡检和源文件编辑拆成独立分区，避免把所有运行配置堆在一个页面里。
+            按邮箱服务、远端同步、代理、安全、管理员、巡检和源文件编辑拆成独立分区，避免把所有运行配置堆在一个页面里。
           </p>
         </div>
 
@@ -23,12 +23,12 @@
         <div class="glass-card-soft p-4">
           <div class="text-2xl">🧩</div>
           <div class="mt-3 text-sm font-medium text-white">独立配置分区</div>
-          <div class="mt-1 text-xs leading-5 text-slate-400">CloudMail、同步、代理、安全分别独立，不再混在一张表单里。</div>
+          <div class="mt-1 text-xs leading-5 text-slate-400">邮箱服务、同步、代理、安全分别独立，不再混在一张表单里。</div>
         </div>
         <div class="glass-card-soft p-4">
           <div class="text-2xl">☁️</div>
           <div class="mt-3 text-sm font-medium text-white">动态同步配置</div>
-          <div class="mt-1 text-xs leading-5 text-slate-400">先选择启用目标，再按启用状态展示 CPA / Sub2API 配置。</div>
+          <div class="mt-1 text-xs leading-5 text-slate-400">先选择邮箱提供者 / 启用目标，再按状态展示对应配置。</div>
         </div>
         <div class="glass-card-soft p-4">
           <div class="text-2xl">📝</div>
@@ -102,6 +102,85 @@
 
       <div v-if="runtimeLoading" class="text-sm text-slate-400">
         正在加载当前配置...
+      </div>
+
+      <div v-else-if="selectedRuntimeCategory === 'cloudmail'" class="space-y-5">
+        <div class="rounded-2xl border border-white/10 bg-white/5 p-5">
+          <div class="mb-4 flex items-center justify-between gap-4">
+            <div>
+              <div class="text-sm font-medium text-white">邮箱提供者</div>
+              <div class="mt-1 text-xs leading-5 text-slate-400">
+                先选择当前用于创建临时邮箱、收验证码和自动复用的邮箱后端。
+              </div>
+            </div>
+            <div class="status-badge text-xs text-slate-400">
+              {{ selectedMailProvider === 'cloudflare_temp_email' ? 'Cloudflare Temp Email' : 'CloudMail' }}
+            </div>
+          </div>
+          <select v-model="runtimeForm.MAIL_PROVIDER" class="input-dark">
+            <option value="cloudmail">CloudMail</option>
+            <option value="cloudflare_temp_email">Cloudflare Temp Email</option>
+          </select>
+        </div>
+
+        <div v-if="selectedMailProvider === 'cloudmail'" class="rounded-2xl border border-white/10 bg-white/5 p-5">
+          <div class="mb-4">
+            <div class="text-sm font-medium text-white">CloudMail</div>
+            <div class="mt-1 text-xs leading-5 text-slate-400">
+              填写 CloudMail API 地址、管理员账号和用于创建临时邮箱的域名。
+            </div>
+          </div>
+          <div class="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+            <div v-for="field in cloudmailProviderFields" :key="field.key" class="rounded-2xl border border-white/10 bg-slate-950/25 p-4">
+              <label class="mb-2 block text-sm font-medium text-slate-300">
+                {{ field.prompt }}
+                <span v-if="isRuntimeRequired(field)" class="text-red-400">*</span>
+              </label>
+              <input
+                v-model="runtimeForm[field.key]"
+                :type="fieldInputType(field.key)"
+                :placeholder="field.default || ''"
+                class="input-dark"
+              />
+            </div>
+          </div>
+        </div>
+
+        <div v-else-if="selectedMailProvider === 'cloudflare_temp_email'" class="rounded-2xl border border-white/10 bg-white/5 p-5">
+          <div class="mb-4">
+            <div class="text-sm font-medium text-white">Cloudflare Temp Email</div>
+            <div class="mt-1 text-xs leading-5 text-slate-400">
+              填写 Cloudflare Temp Email 管理端地址、管理员密码和默认邮箱域名。
+            </div>
+          </div>
+          <div class="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+            <div v-for="field in cfTempEmailFields" :key="field.key" class="rounded-2xl border border-white/10 bg-slate-950/25 p-4">
+              <label class="mb-2 block text-sm font-medium text-slate-300">
+                {{ field.prompt }}
+                <span v-if="isRuntimeRequired(field)" class="text-red-400">*</span>
+              </label>
+              <input
+                v-model="runtimeForm[field.key]"
+                :type="fieldInputType(field.key)"
+                :placeholder="field.default || ''"
+                class="input-dark"
+              />
+            </div>
+          </div>
+        </div>
+
+        <div class="flex flex-col gap-3 rounded-2xl border border-white/10 bg-white/5 p-4 lg:flex-row lg:items-center lg:justify-between">
+          <p class="text-xs leading-6 text-slate-400">
+            保存后会立即热加载；后续创建账号、自动收验证码和自动复用都会改用当前选择的邮箱提供者。
+          </p>
+          <button
+            @click="saveRuntimeConfig"
+            :disabled="runtimeSaving || runtimeLoading"
+            class="btn-primary"
+          >
+            {{ runtimeSaving ? '保存中...' : '保存配置' }}
+          </button>
+        </div>
       </div>
 
       <div v-else-if="selectedRuntimeCategory === 'sync'" class="space-y-5">
@@ -301,7 +380,7 @@
           </div>
           <h3 class="section-heading">源文件编辑</h3>
           <p class="section-subtitle">
-            直接编辑 .env 源文件。保存后会立即重载并校验 CloudMail / 远端同步配置。
+            直接编辑 .env 源文件。保存后会立即重载并校验邮箱服务 / 远端同步配置。
           </p>
         </div>
         <div class="status-badge break-all font-mono text-[11px] text-slate-400">
@@ -369,7 +448,7 @@ defineProps({
 const emit = defineEmits(['refresh', 'admin-progress'])
 
 const runtimeCategoryKeys = {
-  cloudmail: ['CLOUDMAIL_BASE_URL', 'CLOUDMAIL_EMAIL', 'CLOUDMAIL_PASSWORD', 'CLOUDMAIL_DOMAIN'],
+  cloudmail: ['MAIL_PROVIDER', 'CLOUDMAIL_BASE_URL', 'CLOUDMAIL_EMAIL', 'CLOUDMAIL_PASSWORD', 'CLOUDMAIL_DOMAIN', 'CF_TEMP_EMAIL_BASE_URL', 'CF_TEMP_EMAIL_ADMIN_PASSWORD', 'CF_TEMP_EMAIL_DOMAIN'],
   sync: ['SYNC_TARGET_CPA', 'SYNC_TARGET_SUB2API', 'CPA_URL', 'CPA_KEY', 'SUB2API_URL', 'SUB2API_EMAIL', 'SUB2API_PASSWORD', 'SUB2API_GROUP'],
   proxy: ['PLAYWRIGHT_PROXY_URL', 'PLAYWRIGHT_PROXY_BYPASS'],
   security: ['API_KEY'],
@@ -378,11 +457,11 @@ const runtimeCategoryKeys = {
 const runtimeCategoryMeta = {
   cloudmail: {
     icon: '📧',
-    badge: 'CloudMail',
-    title: 'CloudMail 配置',
-    description: '配置自动注册和收验证码所需的邮箱服务。账号池创建、轮转复用和验证码接收都会使用这里的设置。',
-    note: '带 * 的项会直接影响账号池操作；CloudMail 四项建议一起填写完整。',
-    footer: 'CloudMail 配置保存后会立即热加载；之后的注册、复用和验证码轮询会直接使用新配置。',
+    badge: 'Mail Provider',
+    title: '邮箱服务配置',
+    description: '配置自动注册和收验证码所需的邮箱后端。可以在 CloudMail 和 Cloudflare Temp Email 之间切换。',
+    note: '带 * 的项会直接影响账号池操作；只有当前选中的邮箱提供者配置会被视为运行时必填。',
+    footer: '邮箱提供者配置保存后会立即热加载；之后的注册、复用和验证码轮询会直接使用新配置。',
   },
   sync: {
     icon: '☁️',
@@ -409,7 +488,7 @@ const runtimeCategoryMeta = {
 }
 
 const visualCategories = [
-  { key: 'cloudmail', label: 'CloudMail', icon: '📧' },
+  { key: 'cloudmail', label: '邮箱服务', icon: '📧' },
   { key: 'sync', label: '远端同步', icon: '☁️' },
   { key: 'proxy', label: '代理 / 高级', icon: '🛰️' },
   { key: 'security', label: '安全 / 访问控制', icon: '🔐' },
@@ -451,10 +530,12 @@ function fieldsByKeys(keys) {
     .filter(Boolean)
 }
 
-const cloudmailFields = computed(() => fieldsByKeys(runtimeCategoryKeys.cloudmail))
 const securityFields = computed(() => fieldsByKeys(runtimeCategoryKeys.security))
 const proxyFields = computed(() => fieldsByKeys(runtimeCategoryKeys.proxy))
 const syncToggleFields = computed(() => fieldsByKeys(['SYNC_TARGET_CPA', 'SYNC_TARGET_SUB2API']))
+const selectedMailProvider = computed(() => String(runtimeForm.MAIL_PROVIDER || 'cloudmail').toLowerCase() === 'cloudflare_temp_email' ? 'cloudflare_temp_email' : 'cloudmail')
+const cloudmailProviderFields = computed(() => fieldsByKeys(['CLOUDMAIL_BASE_URL', 'CLOUDMAIL_EMAIL', 'CLOUDMAIL_PASSWORD', 'CLOUDMAIL_DOMAIN']))
+const cfTempEmailFields = computed(() => fieldsByKeys(['CF_TEMP_EMAIL_BASE_URL', 'CF_TEMP_EMAIL_ADMIN_PASSWORD', 'CF_TEMP_EMAIL_DOMAIN']))
 
 const syncCpaEnabled = computed(() => String(runtimeForm.SYNC_TARGET_CPA || '').toLowerCase() === 'true')
 const syncSub2apiEnabled = computed(() => String(runtimeForm.SYNC_TARGET_SUB2API || '').toLowerCase() === 'true')
@@ -463,7 +544,9 @@ const syncSub2apiFields = computed(() => syncSub2apiEnabled.value ? fieldsByKeys
 
 const currentRuntimeFields = computed(() => {
   if (selectedRuntimeCategory.value === 'cloudmail') {
-    return cloudmailFields.value
+    return selectedMailProvider.value === 'cloudflare_temp_email'
+      ? cfTempEmailFields.value
+      : cloudmailProviderFields.value
   }
   if (selectedRuntimeCategory.value === 'security') {
     return securityFields.value
@@ -521,6 +604,22 @@ const currentRuntimeStatus = computed(() => {
       : {
           label: '未设置',
           class: 'border-white/10 bg-white/5 text-slate-400',
+        }
+  }
+
+  if (selectedRuntimeCategory.value === 'cloudmail') {
+    const providerFields = selectedMailProvider.value === 'cloudflare_temp_email'
+      ? cfTempEmailFields.value
+      : cloudmailProviderFields.value
+    const configured = providerFields.length > 0 && providerFields.every(field => !isRuntimeRequired(field) || field.configured)
+    return configured
+      ? {
+          label: '已配置',
+          class: 'border-emerald-400/20 bg-emerald-500/10 text-emerald-200',
+        }
+      : {
+          label: '未配置',
+          class: 'border-red-400/20 bg-red-500/10 text-red-200',
         }
   }
 

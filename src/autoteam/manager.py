@@ -41,7 +41,6 @@ from autoteam.accounts import (
 )
 from autoteam.admin_state import get_admin_email, get_admin_state_summary, get_chatgpt_account_id
 from autoteam.chatgpt_api import ChatGPTTeamAPI
-from autoteam.cloudmail import CloudMailClient
 from autoteam.codex_auth import (
     MainCodexSyncFlow,
     _click_primary_auth_button,
@@ -57,6 +56,15 @@ from autoteam.codex_auth import (
 )
 from autoteam.config import get_playwright_launch_options
 from autoteam.cpa_sync import sync_from_cpa
+from autoteam.mail_provider import (
+    get_account_mail_provider,
+    get_mail_client_for_account,
+    get_mail_domain,
+    get_mail_provider_name,
+)
+from autoteam.mail_provider import (
+    get_mail_client as CloudMailClient,
+)
 from autoteam.sync_targets import (
     sync_main_codex_to_configured_targets as sync_main_codex_to_cpa,
 )
@@ -103,6 +111,15 @@ def _auto_reuse_skip_reason(acc: dict | None) -> str | None:
     return None
 
 
+def _get_account_mail_client(acc: dict | None):
+    acc = acc or {}
+    has_explicit_mail_binding = bool(acc.get("mail_provider")) or acc.get("mail_account_id") is not None
+    has_legacy_cloudmail_binding = acc.get("cloudmail_account_id") is not None
+    if has_explicit_mail_binding or has_legacy_cloudmail_binding:
+        return get_mail_client_for_account(acc)
+    return CloudMailClient()
+
+
 def sync_account_states(chatgpt_api=None):
     """根据 Team 实际成员列表同步本地账号状态"""
     account_id = get_chatgpt_account_id()
@@ -136,9 +153,9 @@ def sync_account_states(chatgpt_api=None):
             chatgpt_api.stop()
 
     # 对照更新状态
-    from autoteam.config import CLOUDMAIL_DOMAIN
-
-    domain_suffix = CLOUDMAIL_DOMAIN.lstrip("@") if CLOUDMAIL_DOMAIN else ""
+    domain_value = get_mail_domain()
+    domain_suffix = domain_value.lstrip("@") if domain_value else ""
+    current_mail_provider = get_mail_provider_name()
 
     changed = False
     local_email_set = {a["email"].lower() for a in accounts}
@@ -164,6 +181,8 @@ def sync_account_states(chatgpt_api=None):
                     {
                         "email": email,
                         "password": "",
+                        "mail_provider": current_mail_provider,
+                        "mail_account_id": None,
                         "cloudmail_account_id": None,
                         "status": STATUS_ACTIVE,
                         "auth_file": None,
@@ -194,6 +213,8 @@ def sync_account_states(chatgpt_api=None):
                     {
                         "email": email,
                         "password": "",
+                        "mail_provider": current_mail_provider,
+                        "mail_account_id": None,
                         "cloudmail_account_id": None,
                         "status": status,
                         "auth_file": str(auth_file),
@@ -374,7 +395,7 @@ def _check_and_refresh(acc):
 
 def cmd_check():
     """只检查 active 账号的额度，无认证文件或 auth_error 的自动重新登录 Codex"""
-    from autoteam.config import AUTO_CHECK_THRESHOLD, CLOUDMAIL_DOMAIN
+    from autoteam.config import AUTO_CHECK_THRESHOLD
 
     # API 运行时配置优先（前端可修改）
     try:
@@ -413,8 +434,9 @@ def cmd_check():
                     continue
 
                 logger.warning("[检查] pending 账号为失败孤儿，删除: %s", email)
-                if mail_client is None:
-                    mail_client = CloudMailClient()
+                desired_provider = get_account_mail_provider(acc)
+                if mail_client is None or getattr(mail_client, "provider_name", "") != desired_provider:
+                    mail_client = _get_account_mail_client(acc)
                     mail_client.login()
                 delete_managed_account(
                     email,
@@ -443,12 +465,14 @@ def cmd_check():
     # 区分：有认证文件的 vs 无认证文件的
     active_with_auth = []
     no_auth_list = []
+    mail_domain = get_mail_domain()
+    mail_domain_suffix = mail_domain.lstrip("@") if mail_domain else ""
     for a in all_active:
         if a.get("auth_file") and Path(a["auth_file"]).exists():
             active_with_auth.append(a)
         else:
             # 只管我们域名的账号
-            if CLOUDMAIL_DOMAIN and CLOUDMAIL_DOMAIN.lstrip("@") in a["email"]:
+            if mail_domain_suffix and mail_domain_suffix in a["email"]:
                 no_auth_list.append(a)
 
     if not active_with_auth and not no_auth_list:
@@ -572,12 +596,17 @@ def cmd_check():
     # auth_error + 无认证文件的统一重新登录 Codex
     if auth_error_list:
         logger.info("[检查] 重新登录 %d 个 token 失效的账号...", len(auth_error_list))
-        mail_client = CloudMailClient()
-        mail_client.login()
+        mail_clients = {}
         for acc in auth_error_list:
             email = acc["email"]
             password = acc.get("password", "")
             logger.info("[%s] 重新 Codex 登录...", email)
+            provider = get_account_mail_provider(acc)
+            mail_client = mail_clients.get(provider)
+            if mail_client is None:
+                mail_client = _get_account_mail_client(acc)
+                mail_client.login()
+                mail_clients[provider] = mail_client
             bundle = login_codex_via_browser(email, password, mail_client=mail_client)
             if bundle:
                 auth_file = save_auth_file(bundle)
@@ -1188,7 +1217,7 @@ def _complete_direct_about_you(page):
     return False
 
 
-def _register_direct_once(mail_client, email, password, cloudmail_account_id=None):
+def _register_direct_once(mail_client, email, password, mail_account_id=None):
     """执行一次直接注册，返回是否完成注册并进入 Team。"""
     from playwright.sync_api import sync_playwright
 
@@ -1409,7 +1438,7 @@ def _register_direct_once(mail_client, email, password, cloudmail_account_id=Non
             verification_code = None
             start_t = time.time()
             while time.time() - start_t < MAIL_TIMEOUT:
-                emails = mail_client.search_emails_by_recipient(email, size=10, account_id=cloudmail_account_id)
+                emails = mail_client.search_emails_by_recipient(email, size=10, account_id=mail_account_id)
                 for em in emails:
                     verification_code = mail_client.extract_verification_code(em)
                     if verification_code:
@@ -1476,7 +1505,7 @@ def create_account_direct(mail_client):
     success = False
     for attempt in range(3):
         logger.info("[直接注册] 开始第 %d/3 次注册尝试: %s", attempt + 1, email)
-        success = _register_direct_once(mail_client, email, password, cloudmail_account_id=account_id)
+        success = _register_direct_once(mail_client, email, password, mail_account_id=account_id)
         if success:
             break
 
@@ -1497,7 +1526,13 @@ def create_account_direct(mail_client):
             logger.warning("[直接注册] 删除失败临时邮箱异常: %s", exc)
         return None
 
-    add_account(email, password, cloudmail_account_id=account_id)
+    add_account(
+        email,
+        password,
+        cloudmail_account_id=account_id if getattr(mail_client, "provider_name", "") == "cloudmail" else None,
+        mail_provider=getattr(mail_client, "provider_name", ""),
+        mail_account_id=account_id,
+    )
 
     # Step 4: Codex 登录
     bundle = login_codex_via_browser(email, password, mail_client=mail_client)
@@ -1588,6 +1623,7 @@ def cmd_rotate(target_seats=5):
 
     chatgpt = None
     mail_client = None
+    reuse_mail_clients = {}
 
     def ensure_chatgpt():
         nonlocal chatgpt
@@ -1602,6 +1638,15 @@ def cmd_rotate(target_seats=5):
             mail_client = CloudMailClient()
             mail_client.login()
         return mail_client
+
+    def ensure_account_mail(acc):
+        provider = get_account_mail_provider(acc)
+        client = reuse_mail_clients.get(provider)
+        if client is None:
+            client = _get_account_mail_client(acc)
+            client.login()
+            reuse_mail_clients[provider] = client
+        return client
 
     def refresh_current_count(current_count, stage_label):
         if not chatgpt or not chatgpt.browser:
@@ -1774,7 +1819,7 @@ def cmd_rotate(target_seats=5):
             logger.info("[4/5] 复用: %s", email)
             if not chatgpt or not chatgpt.browser:
                 ensure_chatgpt()
-            reused = reinvite_account(chatgpt, ensure_mail(), acc)
+            reused = reinvite_account(chatgpt, ensure_account_mail(acc), acc)
             if reused:
                 filled += 1
                 current_count += 1
@@ -2067,6 +2112,16 @@ def cmd_fill(target=5):
     chatgpt.start()
     mail_client = CloudMailClient()
     mail_client.login()
+    reuse_mail_clients = {}
+
+    def ensure_account_mail(acc):
+        provider = get_account_mail_provider(acc)
+        client = reuse_mail_clients.get(provider)
+        if client is None:
+            client = _get_account_mail_client(acc)
+            client.login()
+            reuse_mail_clients[provider] = client
+        return client
 
     try:
         current = get_team_member_count(chatgpt)
@@ -2106,7 +2161,7 @@ def cmd_fill(target=5):
                 # 确保 chatgpt 浏览器可用
                 if not chatgpt.browser:
                     chatgpt.start()
-                added = reinvite_account(chatgpt, mail_client, reusable)
+                added = reinvite_account(chatgpt, ensure_account_mail(reusable), reusable)
                 if added:
                     break
                 logger.warning("[填充] 复用旧账号失败，尝试下一个旧账号: %s", email)

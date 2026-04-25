@@ -73,10 +73,14 @@ def check_auth(request: Request):
 
 
 class SetupConfig(BaseModel):
+    MAIL_PROVIDER: str = "cloudmail"
     CLOUDMAIL_BASE_URL: str = ""
     CLOUDMAIL_EMAIL: str = ""
     CLOUDMAIL_PASSWORD: str = ""
     CLOUDMAIL_DOMAIN: str = ""
+    CF_TEMP_EMAIL_BASE_URL: str = ""
+    CF_TEMP_EMAIL_ADMIN_PASSWORD: str = ""
+    CF_TEMP_EMAIL_DOMAIN: str = ""
     SYNC_TARGET_CPA: str = ""
     CPA_URL: str = "http://127.0.0.1:8317"
     CPA_KEY: str = ""
@@ -99,21 +103,25 @@ _RUNTIME_CONFIG_CLEARABLE_FIELDS = {
     "PLAYWRIGHT_PROXY_BYPASS",
 }
 
-_CLOUDMAIL_REQUIRED_KEYS = (
-    "CLOUDMAIL_BASE_URL",
-    "CLOUDMAIL_EMAIL",
-    "CLOUDMAIL_PASSWORD",
-    "CLOUDMAIL_DOMAIN",
+_CLOUDMAIL_REQUIRED_KEYS = ("CLOUDMAIL_BASE_URL", "CLOUDMAIL_EMAIL", "CLOUDMAIL_PASSWORD", "CLOUDMAIL_DOMAIN")
+_CF_TEMP_EMAIL_REQUIRED_KEYS = (
+    "CF_TEMP_EMAIL_BASE_URL",
+    "CF_TEMP_EMAIL_ADMIN_PASSWORD",
+    "CF_TEMP_EMAIL_DOMAIN",
 )
 _CPA_REQUIRED_KEYS = ("CPA_URL", "CPA_KEY")
 _SUB2API_REQUIRED_KEYS = ("SUB2API_URL", "SUB2API_EMAIL", "SUB2API_PASSWORD")
 _SYNC_TARGET_TOGGLE_KEYS = ("SYNC_TARGET_CPA", "SYNC_TARGET_SUB2API")
 
 _ALL_RUNTIME_ENV_KEYS = [
+    "MAIL_PROVIDER",
     "CLOUDMAIL_BASE_URL",
     "CLOUDMAIL_EMAIL",
     "CLOUDMAIL_PASSWORD",
     "CLOUDMAIL_DOMAIN",
+    "CF_TEMP_EMAIL_BASE_URL",
+    "CF_TEMP_EMAIL_ADMIN_PASSWORD",
+    "CF_TEMP_EMAIL_DOMAIN",
     "CHATGPT_ACCOUNT_ID",
     "SYNC_TARGET_CPA",
     "CPA_URL",
@@ -177,8 +185,11 @@ def _effective_sync_target_states(env: dict[str, str] | None = None):
 
 
 def _runtime_required_keys(env: dict[str, str] | None = None) -> set[str]:
+    from autoteam.mail_provider import get_mail_provider_name, get_mail_provider_required_keys
+
     states = _effective_sync_target_states(env)
-    required = set(_CLOUDMAIL_REQUIRED_KEYS)
+    provider = get_mail_provider_name(env)
+    required = set(get_mail_provider_required_keys(provider))
     required.add("API_KEY")
     if states.get("cpa"):
         required.update(_CPA_REQUIRED_KEYS)
@@ -199,10 +210,12 @@ def _require_runtime_configs(
 
 
 def _require_pool_operation_configs(action_label: str):
+    from autoteam.mail_provider import get_mail_provider_name, get_mail_provider_required_keys
     from autoteam.sync_targets import get_enabled_sync_targets
 
     env = _current_runtime_env()
-    _require_runtime_configs(_CLOUDMAIL_REQUIRED_KEYS, action_label, env=env)
+    provider = get_mail_provider_name(env)
+    _require_runtime_configs(get_mail_provider_required_keys(provider), action_label, env=env)
 
     enabled_targets = get_enabled_sync_targets(env)
     if not enabled_targets:
@@ -223,6 +236,13 @@ def _require_pool_operation_configs(action_label: str):
     if missing:
         detail = _format_missing_runtime_configs(missing)
         raise HTTPException(status_code=400, detail=f"{action_label} 前请先在配置面板填写：{detail}")
+
+
+def _require_account_mail_configs(account: dict, action_label: str):
+    from autoteam.mail_provider import get_account_mail_provider, get_mail_provider_required_keys
+
+    provider = get_account_mail_provider(account)
+    _require_runtime_configs(get_mail_provider_required_keys(provider), action_label, env=_current_runtime_env())
 
 
 def _require_cpa_configs(action_label: str):
@@ -255,6 +275,7 @@ def _require_sync_target_configs(action_label: str):
 
 
 def _collect_config_fields(*, include_values: bool = False, configs=None):
+    from autoteam.mail_provider import get_mail_provider_name
     from autoteam.setup_wizard import REQUIRED_CONFIGS, _read_env
 
     env = _read_env()
@@ -262,6 +283,7 @@ def _collect_config_fields(*, include_values: bool = False, configs=None):
     merged_env.update(env)
     target_states = _effective_sync_target_states(merged_env)
     runtime_required_keys = _runtime_required_keys(merged_env)
+    mail_provider = get_mail_provider_name(merged_env)
     config_items = configs or REQUIRED_CONFIGS
     fields = []
     all_ok = True
@@ -273,9 +295,12 @@ def _collect_config_fields(*, include_values: bool = False, configs=None):
         elif key == "SYNC_TARGET_SUB2API":
             raw_value = "true" if target_states.get("sub2api") else "false"
             configured = True
+        elif key == "MAIL_PROVIDER":
+            raw_value = mail_provider
+            configured = True
         else:
             configured = bool(raw_value)
-        if not configured and not optional:
+        if not configured and (key in runtime_required_keys or not optional):
             all_ok = False
 
         field = {
@@ -298,7 +323,13 @@ def _reload_runtime_config_modules():
     import autoteam.config
 
     modules = [autoteam.config]
-    for module_name in ("autoteam.cloudmail", "autoteam.cpa_sync", "autoteam.sub2api_sync"):
+    for module_name in (
+        "autoteam.cloudmail",
+        "autoteam.cloudflare_temp_email",
+        "autoteam.mail_provider",
+        "autoteam.cpa_sync",
+        "autoteam.sub2api_sync",
+    ):
         try:
             module = importlib.import_module(module_name)
         except Exception:
@@ -467,25 +498,22 @@ def _maybe_reload_runtime_config_from_env_file(*, force: bool = False):
 
 
 def _verify_runtime_integrations(previous_env: dict[str, str | None] | None = None):
-    from autoteam.setup_wizard import _verify_cloudmail, _verify_cpa, _verify_sub2api
+    from autoteam.mail_provider import get_mail_provider_name, get_mail_provider_prompt, get_mail_provider_required_keys
+    from autoteam.setup_wizard import _verify_cpa, _verify_mail_provider, _verify_sub2api
 
     errors = []
-    cloudmail_keys = (
-        "CLOUDMAIL_BASE_URL",
-        "CLOUDMAIL_EMAIL",
-        "CLOUDMAIL_PASSWORD",
-        "CLOUDMAIL_DOMAIN",
-    )
+    mail_provider = get_mail_provider_name()
+    mail_keys = tuple(get_mail_provider_required_keys(mail_provider))
     cpa_keys = ("CPA_URL", "CPA_KEY")
     sub2api_keys = ("SUB2API_URL", "SUB2API_EMAIL", "SUB2API_PASSWORD")
 
-    cloudmail_values = [os.environ.get(key, "") for key in cloudmail_keys]
+    mail_values = [os.environ.get(key, "") for key in mail_keys]
     cpa_values = [os.environ.get(key, "") for key in cpa_keys]
     sub2api_values = [os.environ.get(key, "") for key in sub2api_keys]
     sync_states = _effective_sync_target_states()
 
-    if all(cloudmail_values) and not _verify_cloudmail():
-        errors.append("CloudMail 连接失败")
+    if mail_keys and all(mail_values) and not _verify_mail_provider(mail_provider):
+        errors.append(f"{get_mail_provider_prompt(mail_provider)} 连接失败")
     if sync_states.get("cpa") and all(cpa_values) and not _verify_cpa():
         errors.append("CPA 连接失败")
     if sync_states.get("sub2api") and all(sub2api_values) and not _verify_sub2api():
@@ -502,11 +530,13 @@ def _save_runtime_config(data: dict[str, str]):
     """保存运行时配置到 .env，并在当前进程立即生效。"""
     import secrets as _secrets
 
+    from autoteam.mail_provider import normalize_mail_provider
     from autoteam.setup_wizard import REQUIRED_CONFIGS, _write_env
 
     env_keys = [key for key, _prompt, _default, _optional in REQUIRED_CONFIGS]
     existing = {key: os.environ.get(key, "") for key in env_keys}
     merged = {key: data.get(key, existing.get(key, "")) for key in env_keys}
+    merged["MAIL_PROVIDER"] = normalize_mail_provider(merged.get("MAIL_PROVIDER") or existing.get("MAIL_PROVIDER"))
 
     if not merged.get("API_KEY"):
         merged["API_KEY"] = _secrets.token_urlsafe(24)
@@ -926,7 +956,7 @@ def _display_account_status(acc: dict, quota_snapshot: dict | None = None) -> st
 
 def _sanitize_account(acc: dict, quota_snapshot: dict | None = None) -> dict:
     """脱敏账号信息（去掉 password 等敏感字段）"""
-    sanitized = {k: v for k, v in acc.items() if k not in ("password", "cloudmail_account_id")}
+    sanitized = {k: v for k, v in acc.items() if k not in ("password", "cloudmail_account_id", "mail_account_id")}
     sanitized["is_main_account"] = _is_main_account_email(acc.get("email"))
     sanitized["status"] = _display_account_status(acc, quota_snapshot)
     return sanitized
@@ -1685,11 +1715,11 @@ def post_account_login(params: LoginAccountParams):
     acc = find_account(accounts, email)
     if not acc:
         raise HTTPException(status_code=404, detail="账号不存在")
-    _require_pool_operation_configs("登录账号")
+    _require_account_mail_configs(acc, "登录账号")
+    _require_sync_target_configs("登录账号")
 
     def _run():
         from autoteam.accounts import STATUS_ACTIVE, update_account
-        from autoteam.cloudmail import CloudMailClient
         from autoteam.codex_auth import (
             check_codex_quota,
             login_codex_via_browser,
@@ -1697,8 +1727,9 @@ def post_account_login(params: LoginAccountParams):
             quota_result_resets_at,
             save_auth_file,
         )
+        from autoteam.mail_provider import get_mail_client_for_account
 
-        mail_client = CloudMailClient()
+        mail_client = get_mail_client_for_account(acc)
         mail_client.login()
         bundle = login_codex_via_browser(email, acc.get("password", ""), mail_client=mail_client)
         if bundle:
