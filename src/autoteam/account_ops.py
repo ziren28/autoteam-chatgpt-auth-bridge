@@ -7,7 +7,8 @@ from pathlib import Path
 from autoteam.accounts import find_account, load_accounts, save_accounts
 from autoteam.admin_state import get_chatgpt_account_id
 from autoteam.cloudmail import CloudMailClient
-from autoteam.cpa_sync import delete_from_cpa, list_cpa_files, sync_to_cpa
+from autoteam.sync_targets import delete_account_from_configured_targets
+from autoteam.sync_targets import sync_to_configured_targets as sync_to_cpa
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +80,7 @@ def delete_managed_account(
         "local_record": False,
         "local_auth_files": [],
         "cpa_files": [],
+        "sub2api_accounts": [],
         "team_member_removed": False,
         "invite_removed": False,
         "cloudmail_deleted": False,
@@ -145,13 +147,13 @@ def delete_managed_account(
                 cleanup["local_auth_files"].append(path.name)
                 logger.info("[账号] 已删除本地 auth: %s", path.name)
 
-        cpa_names = set(cleanup["local_auth_files"])
-        for item in list_cpa_files():
-            item_email = (item.get("email") or "").lower()
-            item_name = item.get("name") or ""
-            if item_email == email_l or item_name in cpa_names:
-                if delete_from_cpa(item_name):
-                    cleanup["cpa_files"].append(item_name)
+        remote_cleanup = delete_account_from_configured_targets(
+            email,
+            auth_names=list(cleanup["local_auth_files"]),
+            include_disabled=True,
+        )
+        cleanup["cpa_files"] = list((remote_cleanup.get("cpa") or {}).get("deleted", []))
+        cleanup["sub2api_accounts"] = list((remote_cleanup.get("sub2api") or {}).get("deleted", []))
 
         if acc:
             accounts = [item for item in accounts if item["email"].lower() != email_l]

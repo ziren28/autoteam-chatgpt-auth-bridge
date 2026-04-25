@@ -56,7 +56,13 @@ from autoteam.codex_auth import (
     save_auth_file,
 )
 from autoteam.config import get_playwright_launch_options
-from autoteam.cpa_sync import sync_from_cpa, sync_main_codex_to_cpa, sync_to_cpa
+from autoteam.cpa_sync import sync_from_cpa
+from autoteam.sync_targets import (
+    sync_main_codex_to_configured_targets as sync_main_codex_to_cpa,
+)
+from autoteam.sync_targets import (
+    sync_to_configured_targets as sync_to_cpa,
+)
 from autoteam.textio import read_text, write_text
 
 logger = logging.getLogger(__name__)
@@ -1813,8 +1819,8 @@ def cmd_rotate(target_seats=5):
     finally:
         if chatgpt and chatgpt.browser:
             chatgpt.stop()
-        # 所有操作完成后统一同步 CPA，避免中途同步导致 CPA 不可用
-        logger.info("[轮转] 轮转完成，同步 CPA...")
+        # 所有操作完成后统一同步远端，避免中途同步导致远端状态不一致
+        logger.info("[轮转] 轮转完成，同步已启用远端...")
         sync_to_cpa()
         logger.info("[轮转] 完成，使用 status 命令查看最新状态")
 
@@ -1984,7 +1990,7 @@ def cmd_admin_session(email=None):
 
 
 def cmd_main_codex_sync():
-    """交互式同步主号 Codex 认证到 CPA。"""
+    """交互式同步主号 Codex 认证到已启用远端。"""
     state = get_admin_state_summary()
     if not state.get("session_present") or not state.get("email"):
         logger.error("[主号 Codex] 缺少管理员登录态，请先执行 admin-login")
@@ -2279,7 +2285,7 @@ def main():
     admin_login_p.add_argument("--email", help="管理员邮箱；不传则运行时交互输入")
     admin_session_p = sub.add_parser("admin-session", help="手动输入 session_token 导入管理员登录态")
     admin_session_p.add_argument("--email", help="管理员邮箱；不传则运行时交互输入")
-    sub.add_parser("main-codex-sync", help="交互式同步主号 Codex 到 CPA")
+    sub.add_parser("main-codex-sync", help="交互式同步主号 Codex 到已启用远端")
 
     fill_p = sub.add_parser("fill", help="补满 Team 成员到指定数量")
     fill_p.add_argument("target", type=int, nargs="?", default=5, help="目标成员数（默认 5）")
@@ -2287,7 +2293,7 @@ def main():
     cleanup_p = sub.add_parser("cleanup", help="清理多余成员（只移除本地管理的）")
     cleanup_p.add_argument("max_seats", type=int, nargs="?", default=None, help="最大席位数")
 
-    sub.add_parser("sync", help="手动同步认证文件到 CPA")
+    sub.add_parser("sync", help="手动同步认证文件到已启用远端")
     sub.add_parser("pull-cpa", help="从 CPA 反向同步认证文件到本地")
 
     api_p = sub.add_parser("api", help="启动 HTTP API 服务器")

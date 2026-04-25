@@ -36,6 +36,11 @@ CHATGPT_ACCOUNT_ID = os.environ.get("CHATGPT_ACCOUNT_ID", "")
 CPA_URL = os.environ.get("CPA_URL", "")
 CPA_KEY = os.environ.get("CPA_KEY", "")
 
+# Sub2API 配置
+SUB2API_URL = os.environ.get("SUB2API_URL", "")
+SUB2API_EMAIL = os.environ.get("SUB2API_EMAIL", "")
+SUB2API_PASSWORD = os.environ.get("SUB2API_PASSWORD", "")
+
 # 轮询邮件间隔/超时（秒）
 EMAIL_POLL_INTERVAL = _get_int_env("EMAIL_POLL_INTERVAL", 3)
 EMAIL_POLL_TIMEOUT = _get_int_env("EMAIL_POLL_TIMEOUT", 300)

@@ -79,10 +79,10 @@
             </div>
             <h3 class="section-heading">运行配置</h3>
             <p class="section-subtitle">
-              直接修改 CloudMail、CPA、代理和 API Key。保存后会写入 .env，并立即用于后续请求。
+              直接修改 CloudMail、同步目标、代理和 API Key。保存后会写入 .env，并立即用于后续请求。
             </p>
             <p class="mt-2 text-xs text-slate-500">
-              带 <span class="text-red-400">*</span> 的项目用于账号池操作 / CPA 同步。
+              带 <span class="text-red-400">*</span> 的项目用于账号池操作 / 当前已启用的远端同步。
             </p>
           </div>
           <div class="flex items-center gap-3">
@@ -117,7 +117,16 @@
                 <span v-if="isRuntimeRequired(field)" class="text-red-400">*</span>
                 <span v-if="field.key === 'API_KEY'" class="ml-1 text-xs text-slate-500">（留空自动生成）</span>
               </label>
+              <select
+                v-if="isToggleField(field.key)"
+                v-model="runtimeForm[field.key]"
+                class="input-dark"
+              >
+                <option value="true">启用</option>
+                <option value="false">关闭</option>
+              </select>
               <input
+                v-else
                 v-model="runtimeForm[field.key]"
                 :type="fieldInputType(field.key)"
                 :placeholder="field.default || ''"
@@ -128,7 +137,7 @@
 
           <div class="flex flex-col gap-3 rounded-2xl border border-white/10 bg-white/5 p-4 lg:flex-row lg:items-center lg:justify-between">
             <p class="text-xs leading-6 text-slate-400">
-              已在执行中的任务不会回滚；新配置会用于之后的 CloudMail / CPA / 浏览器请求。
+              已在执行中的任务不会回滚；新配置会用于之后的 CloudMail / CPA / Sub2API / 浏览器请求。
             </p>
             <button
               @click="saveRuntimeConfig"
@@ -169,7 +178,7 @@
           </div>
           <h3 class="section-heading">源文件编辑</h3>
           <p class="section-subtitle">
-            直接编辑 .env 源文件。保存后会立即重载并校验 CloudMail / CPA 配置。
+            直接编辑 .env 源文件。保存后会立即重载并校验 CloudMail / 远端同步配置。
           </p>
         </div>
         <div class="status-badge break-all font-mono text-[11px] text-slate-400">
@@ -265,15 +274,7 @@ const sourceSaving = ref(false)
 const sourceLoaded = ref(false)
 const sourceMessage = ref('')
 const sourceMessageClass = ref('')
-const runtimeRequiredKeys = new Set([
-  'CLOUDMAIL_BASE_URL',
-  'CLOUDMAIL_EMAIL',
-  'CLOUDMAIL_PASSWORD',
-  'CLOUDMAIL_DOMAIN',
-  'CPA_URL',
-  'CPA_KEY',
-  'API_KEY',
-])
+const runtimeRequiredKeys = new Set(['API_KEY'])
 
 const runtimeConfigured = computed(
   () => runtimeFields.value.length > 0 && runtimeFields.value.every(field => !isRuntimeRequired(field) || field.configured),
@@ -305,8 +306,20 @@ function fieldInputType(key) {
   return key.includes('PASSWORD') || key.includes('KEY') ? 'password' : 'text'
 }
 
+function isToggleField(key) {
+  return key === 'SYNC_TARGET_CPA' || key === 'SYNC_TARGET_SUB2API'
+}
+
 function isRuntimeRequired(field) {
   return Boolean(field?.runtime_required) || runtimeRequiredKeys.has(field?.key)
+}
+
+function normalizeRuntimeFieldValue(field) {
+  const value = field?.value ?? field?.default ?? ''
+  if (isToggleField(field?.key)) {
+    return String(value).toLowerCase() === 'true' ? 'true' : 'false'
+  }
+  return value
 }
 
 async function loadRuntimeConfig() {
@@ -321,7 +334,7 @@ async function loadRuntimeConfig() {
       }
     }
     for (const field of runtimeFields.value) {
-      runtimeForm[field.key] = field.value ?? field.default ?? ''
+      runtimeForm[field.key] = normalizeRuntimeFieldValue(field)
     }
   } catch (e) {
     console.error('加载运行时配置失败:', e)

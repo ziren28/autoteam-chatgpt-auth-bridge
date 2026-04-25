@@ -25,8 +25,13 @@ REQUIRED_CONFIGS = [
     ("CLOUDMAIL_EMAIL", "CloudMail 登录邮箱", "", True),
     ("CLOUDMAIL_PASSWORD", "CloudMail 登录密码", "", True),
     ("CLOUDMAIL_DOMAIN", "CloudMail 邮箱域名（如 @example.com）", "", True),
+    ("SYNC_TARGET_CPA", "启用 CPA 同步（true/false）", "", True),
     ("CPA_URL", "CPA (CLIProxyAPI) 地址", "http://127.0.0.1:8317", True),
     ("CPA_KEY", "CPA 管理密钥", "", True),
+    ("SYNC_TARGET_SUB2API", "启用 Sub2API 同步（true/false）", "", True),
+    ("SUB2API_URL", "Sub2API 地址", "", True),
+    ("SUB2API_EMAIL", "Sub2API 管理员邮箱", "", True),
+    ("SUB2API_PASSWORD", "Sub2API 管理员密码", "", True),
     ("PLAYWRIGHT_PROXY_URL", "Playwright 浏览器代理 URL（可选，如 socks5://host:port）", "", True),
     ("PLAYWRIGHT_PROXY_BYPASS", "Playwright 代理绕过列表（可选，如 localhost,127.0.0.1）", "", True),
     ("API_KEY", "API 鉴权密钥（回车自动生成）", "", False),
@@ -227,4 +232,24 @@ def _verify_cpa():
         return False
     except Exception as e:
         logger.error("[验证] CPA 连接失败: %s", e)
+        return False
+
+
+def _verify_sub2api():
+    """验证 Sub2API 配置是否正确：管理员登录并获取账号列表。"""
+    sub2api_url = os.environ.get("SUB2API_URL", "")
+    sub2api_email = os.environ.get("SUB2API_EMAIL", "")
+    sub2api_password = os.environ.get("SUB2API_PASSWORD", "")
+
+    if not sub2api_url or not sub2api_email or not sub2api_password:
+        return True  # 没配就跳过
+
+    logger.info("[验证] Sub2API 配置...")
+
+    try:
+        from autoteam.sub2api_sync import verify_sub2api_connection
+
+        return verify_sub2api_connection()
+    except Exception as e:
+        logger.error("[验证] Sub2API 连接失败: %s", e)
         return False

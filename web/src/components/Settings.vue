@@ -170,7 +170,7 @@
             :disabled="submitting || syncingMain || deletingMainCpa"
             class="px-4 py-2 bg-cyan-700 hover:bg-cyan-600 text-white text-sm rounded-lg transition disabled:opacity-50"
           >
-            {{ syncingMain && mainCodexSubmittingAction === 'sync' ? '同步中...' : '同步主号 Codex 到 CPA' }}
+            {{ syncingMain && mainCodexSubmittingAction === 'sync' ? '同步中...' : '同步主号 Codex 到已启用远端' }}
           </button>
           <button
             @click="deleteMainCodexFromCpa"

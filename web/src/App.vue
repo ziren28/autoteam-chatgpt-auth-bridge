@@ -78,7 +78,7 @@
           </div>
 
           <div class="mt-5 rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-xs leading-6 text-slate-400">
-            如果你是首次部署，启动后只需要先配置 API Key。CloudMail、CPA、代理等运行项可以在登录后进入配置面板继续设置。
+            如果你是首次部署，启动后只需要先配置 API Key。CloudMail、CPA / Sub2API、代理等运行项可以在登录后进入配置面板继续设置。
           </div>
         </div>
       </div>

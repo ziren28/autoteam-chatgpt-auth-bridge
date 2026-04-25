@@ -2,7 +2,7 @@
 
 ## `.env` 配置项
 
-首次运行任何命令时会自动进入配置向导，交互式填写必填项并验证连通性。也可以手动编辑：
+首次运行任何命令时会自动进入配置向导。现在启动阶段只强制要求 `API_KEY`，CloudMail、CPA / Sub2API、代理等运行项也可以在登录后去配置面板补充。也可以手动编辑：
 
 ```bash
 cp .env.example .env
@@ -14,8 +14,13 @@ cp .env.example .env
 | `CLOUDMAIL_EMAIL` | CloudMail 登录邮箱 | 是 |
 | `CLOUDMAIL_PASSWORD` | CloudMail 登录密码 | 是 |
 | `CLOUDMAIL_DOMAIN` | 临时邮箱域名（如 `@example.com`） | 是 |
-| `CPA_URL` | CLIProxyAPI 地址 | 是（留空使用默认 `http://127.0.0.1:8317`） |
-| `CPA_KEY` | CPA 管理密钥 | 是 |
+| `SYNC_TARGET_CPA` | 是否启用 CPA 同步（`true/false`） | 否 |
+| `CPA_URL` | CLIProxyAPI 地址 | 启用 CPA 时必填（默认 `http://127.0.0.1:8317`） |
+| `CPA_KEY` | CPA 管理密钥 | 启用 CPA 时必填 |
+| `SYNC_TARGET_SUB2API` | 是否启用 Sub2API 同步（`true/false`） | 否 |
+| `SUB2API_URL` | Sub2API 地址 | 启用 Sub2API 时必填 |
+| `SUB2API_EMAIL` | Sub2API 管理员邮箱 | 启用 Sub2API 时必填 |
+| `SUB2API_PASSWORD` | Sub2API 管理员密码 | 启用 Sub2API 时必填 |
 | `API_KEY` | Web 面板 / API 鉴权密钥 | 是（首次启动可自动生成） |
 | `PLAYWRIGHT_PROXY_URL` | Playwright 浏览器代理 URL，如 `socks5://host:port` 或 `http://user:pass@host:port` | 否 |
 | `PLAYWRIGHT_PROXY_BYPASS` | Playwright 代理绕过列表，如 `localhost,127.0.0.1` | 否 |
@@ -74,7 +79,7 @@ uv run autoteam admin-login --email you@example.com
 
 ## 主号 Codex 同步
 
-`main-codex-sync` 用于把管理员主号的 Codex 登录态单独同步到 CPA。
+`main-codex-sync` 用于把管理员主号的 Codex 登录态单独同步到当前已启用远端（CPA / Sub2API）。
 
 - **前置条件**：先完成 `admin-login`
 - **结果文件**：`auths/codex-main-*.json`
@@ -126,9 +131,10 @@ codex-{email}-{plan_type}-{hash}.json
 
 ## 启动验证
 
-每次启动会自动验证 CloudMail 和 CPA 的连通性：
+保存运行配置时会按当前已启用目标验证连通性：
 
 - CloudMail：登录 → 创建测试邮箱 → 删除
 - CPA：获取认证文件列表
+- Sub2API：管理员登录 → 获取 OpenAI OAuth 账号列表
 
-验证失败会提示具体哪个环节有问题，配置有误时会拒绝启动。
+验证失败会提示具体哪个环节有问题，保存会被拒绝。

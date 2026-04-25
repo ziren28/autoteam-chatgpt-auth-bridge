@@ -77,8 +77,13 @@ class SetupConfig(BaseModel):
     CLOUDMAIL_EMAIL: str = ""
     CLOUDMAIL_PASSWORD: str = ""
     CLOUDMAIL_DOMAIN: str = ""
+    SYNC_TARGET_CPA: str = ""
     CPA_URL: str = "http://127.0.0.1:8317"
     CPA_KEY: str = ""
+    SYNC_TARGET_SUB2API: str = ""
+    SUB2API_URL: str = ""
+    SUB2API_EMAIL: str = ""
+    SUB2API_PASSWORD: str = ""
     PLAYWRIGHT_PROXY_URL: str = ""
     PLAYWRIGHT_PROXY_BYPASS: str = ""
     API_KEY: str = ""
@@ -100,8 +105,8 @@ _CLOUDMAIL_REQUIRED_KEYS = (
     "CLOUDMAIL_DOMAIN",
 )
 _CPA_REQUIRED_KEYS = ("CPA_URL", "CPA_KEY")
-_POOL_OPERATION_REQUIRED_KEYS = (*_CLOUDMAIL_REQUIRED_KEYS, *_CPA_REQUIRED_KEYS)
-_RUNTIME_PANEL_REQUIRED_KEYS = (*_POOL_OPERATION_REQUIRED_KEYS, "API_KEY")
+_SUB2API_REQUIRED_KEYS = ("SUB2API_URL", "SUB2API_EMAIL", "SUB2API_PASSWORD")
+_SYNC_TARGET_TOGGLE_KEYS = ("SYNC_TARGET_CPA", "SYNC_TARGET_SUB2API")
 
 _ALL_RUNTIME_ENV_KEYS = [
     "CLOUDMAIL_BASE_URL",
@@ -109,8 +114,13 @@ _ALL_RUNTIME_ENV_KEYS = [
     "CLOUDMAIL_PASSWORD",
     "CLOUDMAIL_DOMAIN",
     "CHATGPT_ACCOUNT_ID",
+    "SYNC_TARGET_CPA",
     "CPA_URL",
     "CPA_KEY",
+    "SYNC_TARGET_SUB2API",
+    "SUB2API_URL",
+    "SUB2API_EMAIL",
+    "SUB2API_PASSWORD",
     "EMAIL_POLL_INTERVAL",
     "EMAIL_POLL_TIMEOUT",
     "API_KEY",
@@ -134,46 +144,135 @@ def _runtime_config_prompt_map():
     return {key: prompt for key, prompt, _default, _optional in REQUIRED_CONFIGS}
 
 
-def _missing_runtime_configs(keys: tuple[str, ...] | list[str]):
+def _current_runtime_env():
     from autoteam.setup_wizard import _read_env
 
     env = _read_env()
+    merged = {key: value for key, value in os.environ.items()}
+    merged.update({key: value for key, value in env.items() if value is not None})
+    return merged
+
+
+def _missing_runtime_configs(keys: tuple[str, ...] | list[str], *, env: dict[str, str] | None = None):
+    env_values = env or _current_runtime_env()
     prompt_map = _runtime_config_prompt_map()
     missing = []
     for key in keys:
-        value = (env.get(key, "") or os.environ.get(key, "") or "").strip()
+        value = (env_values.get(key, "") or "").strip()
         if not value:
             missing.append((key, prompt_map.get(key, key)))
     return missing
 
 
-def _require_runtime_configs(keys: tuple[str, ...] | list[str], action_label: str):
-    missing = _missing_runtime_configs(keys)
+def _format_missing_runtime_configs(missing: list[tuple[str, str]]) -> str:
+    return "、".join(f"{key}（{prompt}）" for key, prompt in missing)
+
+
+def _effective_sync_target_states(env: dict[str, str] | None = None):
+    from autoteam.sync_targets import get_sync_target_states
+
+    return get_sync_target_states(env or _current_runtime_env())
+
+
+def _runtime_required_keys(env: dict[str, str] | None = None) -> set[str]:
+    states = _effective_sync_target_states(env)
+    required = set(_CLOUDMAIL_REQUIRED_KEYS)
+    required.add("API_KEY")
+    if states.get("cpa"):
+        required.update(_CPA_REQUIRED_KEYS)
+    if states.get("sub2api"):
+        required.update(_SUB2API_REQUIRED_KEYS)
+    return required
+
+
+def _require_runtime_configs(
+    keys: tuple[str, ...] | list[str], action_label: str, *, env: dict[str, str] | None = None
+):
+    missing = _missing_runtime_configs(keys, env=env)
     if not missing:
         return
 
-    detail = "、".join(f"{key}（{prompt}）" for key, prompt in missing)
+    detail = _format_missing_runtime_configs(missing)
     raise HTTPException(status_code=400, detail=f"{action_label} 前请先在配置面板填写：{detail}")
 
 
 def _require_pool_operation_configs(action_label: str):
-    _require_runtime_configs(_POOL_OPERATION_REQUIRED_KEYS, action_label)
+    from autoteam.sync_targets import get_enabled_sync_targets
+
+    env = _current_runtime_env()
+    _require_runtime_configs(_CLOUDMAIL_REQUIRED_KEYS, action_label, env=env)
+
+    enabled_targets = get_enabled_sync_targets(env)
+    if not enabled_targets:
+        raise HTTPException(
+            status_code=400, detail=f"{action_label} 前请先在配置面板启用至少一个远端同步目标（CPA 或 Sub2API）"
+        )
+
+    missing = _missing_runtime_configs(
+        [
+            key
+            for target in enabled_targets
+            for key in (
+                _CPA_REQUIRED_KEYS if target == "cpa" else _SUB2API_REQUIRED_KEYS if target == "sub2api" else ()
+            )
+        ],
+        env=env,
+    )
+    if missing:
+        detail = _format_missing_runtime_configs(missing)
+        raise HTTPException(status_code=400, detail=f"{action_label} 前请先在配置面板填写：{detail}")
 
 
 def _require_cpa_configs(action_label: str):
     _require_runtime_configs(_CPA_REQUIRED_KEYS, action_label)
 
 
+def _require_sync_target_configs(action_label: str):
+    from autoteam.sync_targets import get_enabled_sync_targets
+
+    env = _current_runtime_env()
+    enabled_targets = get_enabled_sync_targets(env)
+    if not enabled_targets:
+        raise HTTPException(
+            status_code=400, detail=f"{action_label} 前请先在配置面板启用至少一个远端同步目标（CPA 或 Sub2API）"
+        )
+
+    missing = _missing_runtime_configs(
+        [
+            key
+            for target in enabled_targets
+            for key in (
+                _CPA_REQUIRED_KEYS if target == "cpa" else _SUB2API_REQUIRED_KEYS if target == "sub2api" else ()
+            )
+        ],
+        env=env,
+    )
+    if missing:
+        detail = _format_missing_runtime_configs(missing)
+        raise HTTPException(status_code=400, detail=f"{action_label} 前请先在配置面板填写：{detail}")
+
+
 def _collect_config_fields(*, include_values: bool = False, configs=None):
     from autoteam.setup_wizard import REQUIRED_CONFIGS, _read_env
 
     env = _read_env()
+    merged_env = dict(os.environ)
+    merged_env.update(env)
+    target_states = _effective_sync_target_states(merged_env)
+    runtime_required_keys = _runtime_required_keys(merged_env)
     config_items = configs or REQUIRED_CONFIGS
     fields = []
     all_ok = True
     for key, prompt, default, optional in config_items:
         raw_value = env.get(key, "") or os.environ.get(key, "")
-        configured = bool(raw_value)
+        if key == "SYNC_TARGET_CPA":
+            raw_value = "true" if target_states.get("cpa") else "false"
+            configured = True
+        elif key == "SYNC_TARGET_SUB2API":
+            raw_value = "true" if target_states.get("sub2api") else "false"
+            configured = True
+        else:
+            configured = bool(raw_value)
         if not configured and not optional:
             all_ok = False
 
@@ -185,8 +284,8 @@ def _collect_config_fields(*, include_values: bool = False, configs=None):
             "configured": configured,
         }
         if include_values:
-            field["value"] = raw_value or (default if key == "CPA_URL" else "")
-            field["runtime_required"] = key in _RUNTIME_PANEL_REQUIRED_KEYS
+            field["value"] = raw_value if raw_value != "" else default
+            field["runtime_required"] = key in runtime_required_keys
         fields.append(field)
     return {"configured": all_ok, "fields": fields}
 
@@ -197,7 +296,7 @@ def _reload_runtime_config_modules():
     import autoteam.config
 
     modules = [autoteam.config]
-    for module_name in ("autoteam.cloudmail", "autoteam.cpa_sync"):
+    for module_name in ("autoteam.cloudmail", "autoteam.cpa_sync", "autoteam.sub2api_sync"):
         try:
             module = importlib.import_module(module_name)
         except Exception:
@@ -366,7 +465,7 @@ def _maybe_reload_runtime_config_from_env_file(*, force: bool = False):
 
 
 def _verify_runtime_integrations(previous_env: dict[str, str | None] | None = None):
-    from autoteam.setup_wizard import _verify_cloudmail, _verify_cpa
+    from autoteam.setup_wizard import _verify_cloudmail, _verify_cpa, _verify_sub2api
 
     errors = []
     cloudmail_keys = (
@@ -376,14 +475,19 @@ def _verify_runtime_integrations(previous_env: dict[str, str | None] | None = No
         "CLOUDMAIL_DOMAIN",
     )
     cpa_keys = ("CPA_URL", "CPA_KEY")
+    sub2api_keys = ("SUB2API_URL", "SUB2API_EMAIL", "SUB2API_PASSWORD")
 
     cloudmail_values = [os.environ.get(key, "") for key in cloudmail_keys]
     cpa_values = [os.environ.get(key, "") for key in cpa_keys]
+    sub2api_values = [os.environ.get(key, "") for key in sub2api_keys]
+    sync_states = _effective_sync_target_states()
 
     if all(cloudmail_values) and not _verify_cloudmail():
         errors.append("CloudMail 连接失败")
-    if all(cpa_values) and not _verify_cpa():
+    if sync_states.get("cpa") and all(cpa_values) and not _verify_cpa():
         errors.append("CPA 连接失败")
+    if sync_states.get("sub2api") and all(sub2api_values) and not _verify_sub2api():
+        errors.append("Sub2API 连接失败")
     if errors:
         api_key = ""
         if previous_env:
@@ -466,7 +570,7 @@ def get_runtime_config_source():
 
 @app.put("/api/config/runtime")
 def put_runtime_config(config: SetupConfig):
-    """登录后修改 CloudMail / CPA / 代理等运行时配置。"""
+    """登录后修改 CloudMail / CPA / Sub2API / 代理等运行时配置。"""
     return _save_runtime_config(config.model_dump())
 
 
@@ -911,7 +1015,7 @@ def _finish_main_codex_flow():
         if _playwright_lock.locked():
             _playwright_lock.release()
 
-    message = "主号 Codex 已同步到 CPA" if action == "sync" else "主号 Codex 已登录"
+    message = "主号 Codex 已同步到已启用远端" if action == "sync" else "主号 Codex 已登录"
     return {
         "status": "completed",
         "message": message,
@@ -1199,7 +1303,7 @@ def post_admin_logout():
 
 @app.post("/api/main-codex/start")
 def post_main_codex_start():
-    """开始主号 Codex 登录并同步到 CPA。"""
+    """开始主号 Codex 登录并同步到已启用远端。"""
     global _main_codex_flow, _main_codex_step, _main_codex_action
 
     if _main_codex_flow:
@@ -1213,17 +1317,17 @@ def post_main_codex_start():
         if _playwright_lock.locked():
             _playwright_lock.release()
 
-    _require_cpa_configs("同步主号 Codex 到 CPA")
+    _require_sync_target_configs("同步主号 Codex")
 
     from autoteam.codex_auth import get_saved_main_auth_file
-    from autoteam.cpa_sync import sync_main_codex_to_cpa
+    from autoteam.sync_targets import sync_main_codex_to_configured_targets
 
     saved_auth_file = get_saved_main_auth_file()
     if saved_auth_file:
-        sync_main_codex_to_cpa(saved_auth_file)
+        sync_main_codex_to_configured_targets(saved_auth_file)
         return {
             "status": "completed",
-            "message": "主号 Codex 已同步到 CPA",
+            "message": "主号 Codex 已同步到已启用远端",
             "codex": _main_codex_status(),
             "info": {"auth_file": saved_auth_file},
         }
@@ -1617,8 +1721,8 @@ def post_account_login(params: LoginAccountParams):
                             quota_exhausted_at=time.time(),
                             quota_resets_at=quota_result_resets_at(info) or int(time.time() + 18000),
                         )
-            # 同步到 CPA
-            from autoteam.cpa_sync import sync_to_cpa
+            # 同步到已启用远端
+            from autoteam.sync_targets import sync_to_configured_targets as sync_to_cpa
 
             sync_to_cpa()
             return {"email": email, "plan": bundle.get("plan_type"), "auth_file": auth_file}
@@ -1678,13 +1782,13 @@ def get_status():
 
 @app.post("/api/sync")
 def post_sync():
-    """同步认证文件到 CPA"""
-    _require_cpa_configs("同步 CPA")
+    """同步认证文件到已启用远端。"""
+    from autoteam.sync_targets import describe_sync_targets, get_enabled_sync_targets, sync_to_configured_targets
 
-    from autoteam.cpa_sync import sync_to_cpa
-
-    sync_to_cpa()
-    return {"message": "同步完成"}
+    _require_sync_target_configs("同步远端")
+    targets = get_enabled_sync_targets()
+    result = sync_to_configured_targets()
+    return {"message": f"已同步到 {describe_sync_targets(targets)}", "result": result}
 
 
 @app.post("/api/sync/from-cpa")
@@ -1880,7 +1984,7 @@ def get_logs(limit: int = 100, since: float = 0):
 
 @app.post("/api/sync/main-codex")
 def post_sync_main_codex():
-    """兼容旧接口：开始主号 Codex 登录并同步到 CPA。"""
+    """兼容旧接口：开始主号 Codex 登录并同步到已启用远端。"""
     return post_main_codex_start()
 
 
