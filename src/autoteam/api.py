@@ -88,6 +88,15 @@ _RUNTIME_CONFIG_CLEARABLE_FIELDS = {
     "PLAYWRIGHT_PROXY_BYPASS",
 }
 
+_CLOUDMAIL_REQUIRED_KEYS = (
+    "CLOUDMAIL_BASE_URL",
+    "CLOUDMAIL_EMAIL",
+    "CLOUDMAIL_PASSWORD",
+    "CLOUDMAIL_DOMAIN",
+)
+_CPA_REQUIRED_KEYS = ("CPA_URL", "CPA_KEY")
+_POOL_OPERATION_REQUIRED_KEYS = (*_CLOUDMAIL_REQUIRED_KEYS, *_CPA_REQUIRED_KEYS)
+
 _ALL_RUNTIME_ENV_KEYS = [
     "CLOUDMAIL_BASE_URL",
     "CLOUDMAIL_EMAIL",
@@ -108,6 +117,42 @@ _ALL_RUNTIME_ENV_KEYS = [
     "PLAYWRIGHT_PROXY_PASSWORD",
     "PLAYWRIGHT_PROXY_BYPASS",
 ]
+
+
+def _runtime_config_prompt_map():
+    from autoteam.setup_wizard import REQUIRED_CONFIGS
+
+    return {key: prompt for key, prompt, _default, _optional in REQUIRED_CONFIGS}
+
+
+def _missing_runtime_configs(keys: tuple[str, ...] | list[str]):
+    from autoteam.setup_wizard import _read_env
+
+    env = _read_env()
+    prompt_map = _runtime_config_prompt_map()
+    missing = []
+    for key in keys:
+        value = (env.get(key, "") or os.environ.get(key, "") or "").strip()
+        if not value:
+            missing.append((key, prompt_map.get(key, key)))
+    return missing
+
+
+def _require_runtime_configs(keys: tuple[str, ...] | list[str], action_label: str):
+    missing = _missing_runtime_configs(keys)
+    if not missing:
+        return
+
+    detail = "、".join(f"{key}（{prompt}）" for key, prompt in missing)
+    raise HTTPException(status_code=400, detail=f"{action_label} 前请先在配置面板填写：{detail}")
+
+
+def _require_pool_operation_configs(action_label: str):
+    _require_runtime_configs(_POOL_OPERATION_REQUIRED_KEYS, action_label)
+
+
+def _require_cpa_configs(action_label: str):
+    _require_runtime_configs(_CPA_REQUIRED_KEYS, action_label)
 
 
 def _collect_config_fields(*, include_values: bool = False, configs=None):
@@ -1077,6 +1122,8 @@ def post_main_codex_start():
         if _playwright_lock.locked():
             _playwright_lock.release()
 
+    _require_cpa_configs("同步主号 Codex 到 CPA")
+
     from autoteam.codex_auth import get_saved_main_auth_file
     from autoteam.cpa_sync import sync_main_codex_to_cpa
 
@@ -1441,6 +1488,7 @@ def post_account_login(params: LoginAccountParams):
     acc = find_account(accounts, email)
     if not acc:
         raise HTTPException(status_code=404, detail="账号不存在")
+    _require_pool_operation_configs("登录账号")
 
     def _run():
         from autoteam.accounts import STATUS_ACTIVE, update_account
@@ -1540,6 +1588,8 @@ def get_status():
 @app.post("/api/sync")
 def post_sync():
     """同步认证文件到 CPA"""
+    _require_cpa_configs("同步 CPA")
+
     from autoteam.cpa_sync import sync_to_cpa
 
     sync_to_cpa()
@@ -1549,6 +1599,8 @@ def post_sync():
 @app.post("/api/sync/from-cpa")
 def post_sync_from_cpa():
     """从 CPA 反向同步认证文件到本地。"""
+    _require_cpa_configs("拉取 CPA")
+
     from autoteam.cpa_sync import sync_from_cpa
 
     result = sync_from_cpa()
@@ -1744,6 +1796,8 @@ def post_sync_main_codex():
 @app.get("/api/cpa/files")
 def get_cpa_files():
     """获取 CPA 中的认证文件列表"""
+    _require_cpa_configs("查看 CPA 文件")
+
     from autoteam.cpa_sync import list_cpa_files
 
     return list_cpa_files()
@@ -1770,6 +1824,8 @@ def post_check():
 @app.post("/api/tasks/rotate", status_code=202)
 def post_rotate(params: TaskParams = TaskParams()):
     """智能轮转（后台执行）"""
+    _require_pool_operation_configs("智能轮转")
+
     from autoteam.manager import cmd_rotate
 
     task = _start_task("rotate", cmd_rotate, {"target": params.target}, params.target)
@@ -1779,6 +1835,8 @@ def post_rotate(params: TaskParams = TaskParams()):
 @app.post("/api/tasks/add", status_code=202)
 def post_add():
     """添加新账号（后台执行）"""
+    _require_pool_operation_configs("添加新账号")
+
     from autoteam.manager import cmd_add
 
     task = _start_task("add", cmd_add, {})
@@ -1788,6 +1846,8 @@ def post_add():
 @app.post("/api/tasks/fill", status_code=202)
 def post_fill(params: TaskParams = TaskParams()):
     """补满 Team 成员（后台执行）"""
+    _require_pool_operation_configs("补满 Team 成员")
+
     from autoteam.manager import cmd_fill
 
     task = _start_task("fill", cmd_fill, {"target": params.target}, params.target)
@@ -2007,6 +2067,12 @@ def _auto_check_loop():
                 _playwright_lock.release()
 
                 if trigger_rotate:
+                    try:
+                        _require_pool_operation_configs("自动轮转/补位")
+                    except HTTPException as exc:
+                        logger.warning("[巡检] 跳过自动轮转/补位: %s", exc.detail)
+                        continue
+
                     # 将低于阈值的账号标记为 exhausted，rotate 会自动移出并补充
                     from autoteam.accounts import STATUS_EXHAUSTED, update_account
                     from autoteam.codex_auth import quota_result_quota_info, quota_result_resets_at

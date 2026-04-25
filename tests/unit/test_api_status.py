@@ -3,6 +3,9 @@ import logging
 import threading
 import time
 
+import pytest
+from fastapi import HTTPException
+
 from autoteam import api
 
 
@@ -79,10 +82,16 @@ def test_post_setup_save_only_requires_api_key_and_generates_one(monkeypatch):
         written[key] = value
 
     monkeypatch.setattr("autoteam.setup_wizard._write_env", fake_write_env)
+    monkeypatch.setattr("autoteam.setup_wizard._verify_cloudmail", lambda: True)
+    monkeypatch.setattr("autoteam.setup_wizard._verify_cpa", lambda: True)
     monkeypatch.setattr("secrets.token_urlsafe", lambda _n: "generated-token")
     monkeypatch.setattr("importlib.reload", lambda module: module)
     monkeypatch.setattr(api, "API_KEY", "")
     monkeypatch.delenv("CPA_URL", raising=False)
+    monkeypatch.delenv("CLOUDMAIL_BASE_URL", raising=False)
+    monkeypatch.delenv("CLOUDMAIL_EMAIL", raising=False)
+    monkeypatch.delenv("CLOUDMAIL_PASSWORD", raising=False)
+    monkeypatch.delenv("CLOUDMAIL_DOMAIN", raising=False)
     monkeypatch.delenv("API_KEY", raising=False)
 
     result = api.post_setup_save(
@@ -231,6 +240,59 @@ def test_get_runtime_config_source_returns_env_content(tmp_path, monkeypatch):
     assert "API_KEY=test-key" in result["content"]
 
 
+@pytest.mark.parametrize(
+    ("endpoint", "args", "action_label"),
+    [
+        ("post_rotate", (api.TaskParams(target=5),), "智能轮转"),
+        ("post_add", (), "添加新账号"),
+        ("post_fill", (api.TaskParams(target=5),), "补满 Team 成员"),
+    ],
+)
+def test_pool_task_endpoints_require_cloudmail_and_cpa_config(monkeypatch, endpoint, args, action_label):
+    monkeypatch.setattr("autoteam.setup_wizard._read_env", lambda: {})
+    for key in (
+        "CLOUDMAIL_BASE_URL",
+        "CLOUDMAIL_EMAIL",
+        "CLOUDMAIL_PASSWORD",
+        "CLOUDMAIL_DOMAIN",
+        "CPA_URL",
+        "CPA_KEY",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    with pytest.raises(HTTPException) as exc:
+        getattr(api, endpoint)(*args)
+
+    assert exc.value.status_code == 400
+    assert action_label in exc.value.detail
+    assert "配置面板" in exc.value.detail
+    assert "CLOUDMAIL_BASE_URL" in exc.value.detail
+    assert "CPA_KEY" in exc.value.detail
+
+
+@pytest.mark.parametrize(
+    ("endpoint", "action_label"),
+    [
+        ("post_sync", "同步 CPA"),
+        ("post_sync_from_cpa", "拉取 CPA"),
+        ("get_cpa_files", "查看 CPA 文件"),
+    ],
+)
+def test_cpa_endpoints_require_cpa_config(monkeypatch, endpoint, action_label):
+    monkeypatch.setattr("autoteam.setup_wizard._read_env", lambda: {})
+    for key in ("CPA_URL", "CPA_KEY"):
+        monkeypatch.delenv(key, raising=False)
+
+    with pytest.raises(HTTPException) as exc:
+        getattr(api, endpoint)()
+
+    assert exc.value.status_code == 400
+    assert action_label in exc.value.detail
+    assert "配置面板" in exc.value.detail
+    assert "CPA_URL" in exc.value.detail
+    assert "CPA_KEY" in exc.value.detail
+
+
 def test_put_runtime_config_source_applies_env_and_updates_api_key(tmp_path, monkeypatch):
     env_file = tmp_path / ".env"
     env_file.write_text("API_KEY=old-key\n", encoding="utf-8")
@@ -275,6 +337,60 @@ def test_put_runtime_config_source_applies_env_and_updates_api_key(tmp_path, mon
     assert result["api_key"] == "new-key"
     assert api.API_KEY == "new-key"
     assert env_file.read_text(encoding="utf-8").splitlines()[0] == "CLOUDMAIL_BASE_URL=http://mail.example.com"
+
+
+def test_auto_check_skips_rotate_when_pool_configs_are_missing(tmp_path, monkeypatch, caplog):
+    auth_file = tmp_path / "active.json"
+    auth_file.write_text('{"access_token": "token-low"}', encoding="utf-8")
+
+    updates = []
+    started = []
+
+    monkeypatch.setattr(api, "_auto_check_config", {"interval": 0, "threshold": 10, "min_low": 1})
+    monkeypatch.setattr(api, "_auto_check_stop", threading.Event())
+    monkeypatch.setattr(api, "_auto_check_restart", threading.Event())
+    monkeypatch.setattr(api, "_is_main_account_email", lambda _email: False)
+    monkeypatch.setattr("autoteam.setup_wizard._read_env", lambda: {})
+    for key in (
+        "CLOUDMAIL_BASE_URL",
+        "CLOUDMAIL_EMAIL",
+        "CLOUDMAIL_PASSWORD",
+        "CLOUDMAIL_DOMAIN",
+        "CPA_URL",
+        "CPA_KEY",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr(
+        "autoteam.accounts.load_accounts",
+        lambda: [{"email": "low@example.com", "status": "active", "auth_file": str(auth_file)}],
+    )
+    monkeypatch.setattr(
+        "autoteam.codex_auth.check_codex_quota",
+        lambda _token: ("ok", {"primary_pct": 95, "primary_resets_at": 1234567890, "weekly_pct": 1}),
+    )
+    monkeypatch.setattr("autoteam.accounts.update_account", lambda email, **kwargs: updates.append((email, kwargs)))
+    monkeypatch.setattr(
+        api,
+        "_start_task",
+        lambda command, func, params, *args, **kwargs: started.append((command, params, args, kwargs)),
+    )
+
+    stop_event = api._auto_check_stop
+    wait_calls = {"count": 0}
+
+    def fake_wait(_seconds):
+        wait_calls["count"] += 1
+        return wait_calls["count"] > 1
+
+    monkeypatch.setattr(stop_event, "wait", fake_wait)
+
+    with caplog.at_level(logging.WARNING):
+        api._auto_check_loop()
+
+    assert updates == []
+    assert started == []
+    assert "跳过自动轮转/补位" in caplog.text
+    assert "配置面板" in caplog.text
 
 
 def test_auto_check_persists_reuse_blocking_metadata_before_rotate(tmp_path, monkeypatch):

@@ -86,7 +86,7 @@ const adminHint = computed(() => {
   if (props.mode === 'sync') {
     return '同步类操作可独立使用：同步账号、同步 CPA、拉取 CPA。'
   }
-  return '请先在「设置」页完成管理员登录后，轮转/补满/清理等账号池操作才会开放。'
+  return '请先在「配置面板」页完成管理员登录后，轮转/补满/清理等账号池操作才会开放。'
 })
 const showAdminHint = computed(() => !adminReady.value && (props.mode === 'pool' || props.mode === 'sync'))
 
