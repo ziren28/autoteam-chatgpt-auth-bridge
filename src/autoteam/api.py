@@ -84,6 +84,7 @@ class SetupConfig(BaseModel):
     SUB2API_URL: str = ""
     SUB2API_EMAIL: str = ""
     SUB2API_PASSWORD: str = ""
+    SUB2API_GROUP: str = ""
     PLAYWRIGHT_PROXY_URL: str = ""
     PLAYWRIGHT_PROXY_BYPASS: str = ""
     API_KEY: str = ""
@@ -121,6 +122,7 @@ _ALL_RUNTIME_ENV_KEYS = [
     "SUB2API_URL",
     "SUB2API_EMAIL",
     "SUB2API_PASSWORD",
+    "SUB2API_GROUP",
     "EMAIL_POLL_INTERVAL",
     "EMAIL_POLL_TIMEOUT",
     "API_KEY",

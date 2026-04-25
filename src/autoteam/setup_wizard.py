@@ -32,6 +32,7 @@ REQUIRED_CONFIGS = [
     ("SUB2API_URL", "Sub2API 地址", "", True),
     ("SUB2API_EMAIL", "Sub2API 管理员邮箱", "", True),
     ("SUB2API_PASSWORD", "Sub2API 管理员密码", "", True),
+    ("SUB2API_GROUP", "Sub2API 分组（名称或 ID，可选）", "", True),
     ("PLAYWRIGHT_PROXY_URL", "Playwright 浏览器代理 URL（可选，如 socks5://host:port）", "", True),
     ("PLAYWRIGHT_PROXY_BYPASS", "Playwright 代理绕过列表（可选，如 localhost,127.0.0.1）", "", True),
     ("API_KEY", "API 鉴权密钥（回车自动生成）", "", False),

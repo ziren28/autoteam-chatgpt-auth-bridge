@@ -10,123 +10,143 @@
           </div>
           <h2 class="section-heading">配置面板</h2>
           <p class="section-subtitle max-w-2xl">
-            参考 CLIProxyAPI 的方式，分为可视化编辑和源文件编辑两种模式。
+            按 CloudMail、远端同步、代理、安全、管理员、巡检和源文件编辑拆成独立分区，避免把所有运行配置堆在一个页面里。
           </p>
         </div>
 
-        <div class="flex flex-wrap gap-2">
-          <button
-            v-for="item in editModes"
-            :key="item.key"
-            @click="editMode = item.key"
-            class="pill-tab flex items-center gap-2"
-            :class="editMode === item.key
-              ? 'pill-tab-active'
-              : ''"
-          >
-            <span class="text-base">{{ item.icon }}</span>
-            {{ item.label }}
-          </button>
+        <div class="status-badge max-w-sm text-xs leading-6 text-slate-400">
+          高频配置前置，低频配置后置；代理等高级项默认折叠，源文件编辑仍然保留。
         </div>
       </div>
 
       <div class="mt-6 grid gap-4 md:grid-cols-3">
         <div class="glass-card-soft p-4">
           <div class="text-2xl">🧩</div>
-          <div class="mt-3 text-sm font-medium text-white">统一配置入口</div>
-          <div class="mt-1 text-xs leading-5 text-slate-400">运行参数、管理员登录、巡检设置都集中在这里。</div>
+          <div class="mt-3 text-sm font-medium text-white">独立配置分区</div>
+          <div class="mt-1 text-xs leading-5 text-slate-400">CloudMail、同步、代理、安全分别独立，不再混在一张表单里。</div>
         </div>
         <div class="glass-card-soft p-4">
-          <div class="text-2xl">⚙️</div>
-          <div class="mt-3 text-sm font-medium text-white">可视化编辑</div>
-          <div class="mt-1 text-xs leading-5 text-slate-400">适合日常修改，分类更清晰，保存后立刻生效。</div>
+          <div class="text-2xl">☁️</div>
+          <div class="mt-3 text-sm font-medium text-white">动态同步配置</div>
+          <div class="mt-1 text-xs leading-5 text-slate-400">先选择启用目标，再按启用状态展示 CPA / Sub2API 配置。</div>
         </div>
         <div class="glass-card-soft p-4">
           <div class="text-2xl">📝</div>
-          <div class="mt-3 text-sm font-medium text-white">源文件编辑</div>
-          <div class="mt-1 text-xs leading-5 text-slate-400">适合直接粘贴或完整维护 .env。</div>
+          <div class="mt-3 text-sm font-medium text-white">源文件编辑保留</div>
+          <div class="mt-1 text-xs leading-5 text-slate-400">可视化配置之外，仍可直接维护完整 .env 源文件。</div>
         </div>
       </div>
     </div>
 
-    <template v-if="editMode === 'visual'">
-      <div class="glass-card p-4">
-        <div class="flex flex-wrap gap-2">
-          <button
-            v-for="item in visualCategories"
-            :key="item.key"
-            @click="visualCategory = item.key"
-            class="pill-tab flex items-center gap-2"
-            :class="visualCategory === item.key
-              ? 'pill-tab-active'
-              : ''"
+    <div class="glass-card p-4">
+      <div class="flex flex-wrap gap-2">
+        <button
+          v-for="item in visualCategories"
+          :key="item.key"
+          @click="visualCategory = item.key"
+          class="pill-tab flex items-center gap-2"
+          :class="visualCategory === item.key
+            ? 'pill-tab-active'
+            : ''"
+        >
+          <span class="text-base">{{ item.icon }}</span>
+          {{ item.label }}
+        </button>
+      </div>
+    </div>
+
+    <div
+      v-if="selectedRuntimeCategory"
+      class="glass-card p-6"
+    >
+      <div class="mb-6 flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+        <div>
+          <div class="mb-2 inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-slate-300">
+            <span>{{ currentRuntimeCategoryMeta?.icon }}</span>
+            {{ currentRuntimeCategoryMeta?.badge }}
+          </div>
+          <h3 class="section-heading">{{ currentRuntimeCategoryMeta?.title }}</h3>
+          <p class="section-subtitle max-w-3xl">
+            {{ currentRuntimeCategoryMeta?.description }}
+          </p>
+          <p
+            v-if="currentRuntimeCategoryMeta?.note"
+            class="mt-2 text-xs text-slate-500"
           >
-            <span class="text-base">{{ item.icon }}</span>
-            {{ item.label }}
-          </button>
+            {{ currentRuntimeCategoryMeta.note }}
+          </p>
+        </div>
+        <div class="flex items-center gap-3">
+          <span
+            v-if="runtimeSaved"
+            class="status-badge border-emerald-400/20 bg-emerald-500/10 text-emerald-200"
+          >
+            已保存
+          </span>
+          <span
+            class="status-badge min-w-[84px] justify-center"
+            :class="currentRuntimeStatus.class"
+          >
+            {{ currentRuntimeStatus.label }}
+          </span>
         </div>
       </div>
 
       <div
-        v-if="visualCategory === 'runtime'"
-        class="glass-card p-6"
+        v-if="runtimeMessage"
+        class="mb-4 rounded-2xl px-4 py-3 text-sm border"
+        :class="runtimeMessageClass"
       >
-        <div class="mb-6 flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-          <div>
-            <div class="mb-2 inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-slate-300">
-              <span>⚙️</span>
-              Runtime Config
+        {{ runtimeMessage }}
+      </div>
+
+      <div v-if="runtimeLoading" class="text-sm text-slate-400">
+        正在加载当前配置...
+      </div>
+
+      <div v-else-if="selectedRuntimeCategory === 'sync'" class="space-y-5">
+        <div class="rounded-2xl border border-white/10 bg-white/5 p-5">
+          <div class="mb-4 flex items-center justify-between gap-4">
+            <div>
+              <div class="text-sm font-medium text-white">同步目标开关</div>
+              <div class="mt-1 text-xs leading-5 text-slate-400">
+                可同时启用多个远端。界面只展示当前已启用目标的详细配置。
+              </div>
             </div>
-            <h3 class="section-heading">运行配置</h3>
-            <p class="section-subtitle">
-              直接修改 CloudMail、同步目标、代理和 API Key。保存后会写入 .env，并立即用于后续请求。
-            </p>
-            <p class="mt-2 text-xs text-slate-500">
-              带 <span class="text-red-400">*</span> 的项目用于账号池操作 / 当前已启用的远端同步。
-            </p>
+            <div class="status-badge text-xs text-slate-400">
+              {{ enabledSyncTargetsText }}
+            </div>
           </div>
-          <div class="flex items-center gap-3">
-            <span v-if="runtimeSaved" class="status-badge border-emerald-400/20 bg-emerald-500/10 text-emerald-200">已保存</span>
-            <span
-              class="status-badge min-w-[84px] justify-center"
-              :class="runtimeConfigured
-                ? 'border-emerald-400/20 bg-emerald-500/10 text-emerald-200'
-                : 'border-white/10 bg-white/5 text-slate-400'"
-            >
-              {{ runtimeConfigured ? '已配置' : '未配置' }}
-            </span>
-          </div>
-        </div>
-
-        <div
-          v-if="runtimeMessage"
-          class="mb-4 rounded-2xl px-4 py-3 text-sm border"
-          :class="runtimeMessageClass"
-        >
-          {{ runtimeMessage }}
-        </div>
-
-        <div v-if="runtimeLoading" class="text-sm text-slate-400">
-          正在加载当前配置...
-        </div>
-        <div v-else class="space-y-4">
-          <div class="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
-            <div v-for="field in runtimeFields" :key="field.key" class="rounded-2xl border border-white/10 bg-white/5 p-4">
+          <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
+            <div v-for="field in syncToggleFields" :key="field.key" class="rounded-2xl border border-white/10 bg-slate-950/25 p-4">
               <label class="mb-2 block text-sm font-medium text-slate-300">
                 {{ field.prompt }}
-                <span v-if="isRuntimeRequired(field)" class="text-red-400">*</span>
-                <span v-if="field.key === 'API_KEY'" class="ml-1 text-xs text-slate-500">（留空自动生成）</span>
               </label>
               <select
-                v-if="isToggleField(field.key)"
                 v-model="runtimeForm[field.key]"
                 class="input-dark"
               >
                 <option value="true">启用</option>
                 <option value="false">关闭</option>
               </select>
+            </div>
+          </div>
+        </div>
+
+        <div v-if="syncCpaEnabled" class="rounded-2xl border border-white/10 bg-white/5 p-5">
+          <div class="mb-4">
+            <div class="text-sm font-medium text-white">CPA</div>
+            <div class="mt-1 text-xs leading-5 text-slate-400">
+              为已启用的 CPA 远端填写连接地址和管理密钥。
+            </div>
+          </div>
+          <div class="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+            <div v-for="field in syncCpaFields" :key="field.key" class="rounded-2xl border border-white/10 bg-slate-950/25 p-4">
+              <label class="mb-2 block text-sm font-medium text-slate-300">
+                {{ field.prompt }}
+                <span v-if="isRuntimeRequired(field)" class="text-red-400">*</span>
+              </label>
               <input
-                v-else
                 v-model="runtimeForm[field.key]"
                 :type="fieldInputType(field.key)"
                 :placeholder="field.default || ''"
@@ -134,42 +154,145 @@
               />
             </div>
           </div>
+        </div>
 
-          <div class="flex flex-col gap-3 rounded-2xl border border-white/10 bg-white/5 p-4 lg:flex-row lg:items-center lg:justify-between">
-            <p class="text-xs leading-6 text-slate-400">
-              已在执行中的任务不会回滚；新配置会用于之后的 CloudMail / CPA / Sub2API / 浏览器请求。
-            </p>
-            <button
-              @click="saveRuntimeConfig"
-              :disabled="runtimeSaving || runtimeLoading"
-              class="btn-primary"
-            >
-              {{ runtimeSaving ? '保存中...' : '保存配置' }}
-            </button>
+        <div v-if="syncSub2apiEnabled" class="rounded-2xl border border-white/10 bg-white/5 p-5">
+          <div class="mb-4">
+            <div class="text-sm font-medium text-white">Sub2API</div>
+            <div class="mt-1 text-xs leading-5 text-slate-400">
+              为已启用的 Sub2API 远端填写地址、管理员邮箱和密码。
+            </div>
           </div>
+          <div class="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+            <div v-for="field in syncSub2apiFields" :key="field.key" class="rounded-2xl border border-white/10 bg-slate-950/25 p-4">
+              <label class="mb-2 block text-sm font-medium text-slate-300">
+                {{ field.prompt }}
+                <span v-if="isRuntimeRequired(field)" class="text-red-400">*</span>
+              </label>
+              <input
+                v-model="runtimeForm[field.key]"
+                :type="fieldInputType(field.key)"
+                :placeholder="field.default || ''"
+                class="input-dark"
+              />
+            </div>
+          </div>
+        </div>
+
+        <div v-if="!syncCpaEnabled && !syncSub2apiEnabled" class="rounded-2xl border border-white/10 bg-white/5 px-4 py-4 text-sm text-slate-400">
+          当前还没有启用任何远端同步目标。先打开上面的开关，再填写对应远端配置。
+        </div>
+
+        <div class="flex flex-col gap-3 rounded-2xl border border-white/10 bg-white/5 p-4 lg:flex-row lg:items-center lg:justify-between">
+          <p class="text-xs leading-6 text-slate-400">
+            保存后会立即热加载；账号池操作会根据当前已启用远端决定后续同步行为。
+          </p>
+          <button
+            @click="saveRuntimeConfig"
+            :disabled="runtimeSaving || runtimeLoading"
+            class="btn-primary"
+          >
+            {{ runtimeSaving ? '保存中...' : '保存配置' }}
+          </button>
         </div>
       </div>
 
-      <Settings
-        v-else-if="visualCategory === 'admin'"
-        :admin-status="adminStatus"
-        :codex-status="codexStatus"
-        section="admin"
-        @refresh="$emit('refresh')"
-        @admin-progress="$emit('admin-progress')"
-      />
+      <div v-else-if="selectedRuntimeCategory === 'proxy'" class="space-y-4">
+        <div class="rounded-2xl border border-white/10 bg-white/5 p-4">
+          <button
+            @click="proxyExpanded = !proxyExpanded"
+            class="flex w-full items-center justify-between gap-4 text-left"
+          >
+            <div>
+              <div class="text-sm font-medium text-white">高级代理设置</div>
+              <div class="mt-1 text-xs leading-5 text-slate-400">
+                低频配置，默认折叠。只有浏览器流量需要单独代理时才建议填写。
+              </div>
+            </div>
+            <span class="text-xs text-slate-400">{{ proxyExpanded ? '收起' : '展开' }}</span>
+          </button>
 
-      <Settings
-        v-else-if="visualCategory === 'auto-check'"
-        :admin-status="adminStatus"
-        :codex-status="codexStatus"
-        section="auto-check"
-        @refresh="$emit('refresh')"
-        @admin-progress="$emit('admin-progress')"
-      />
-    </template>
+          <div v-if="proxyExpanded" class="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+            <div v-for="field in proxyFields" :key="field.key" class="rounded-2xl border border-white/10 bg-slate-950/25 p-4">
+              <label class="mb-2 block text-sm font-medium text-slate-300">
+                {{ field.prompt }}
+                <span v-if="isRuntimeRequired(field)" class="text-red-400">*</span>
+              </label>
+              <input
+                v-model="runtimeForm[field.key]"
+                :type="fieldInputType(field.key)"
+                :placeholder="field.default || ''"
+                class="input-dark"
+              />
+            </div>
+          </div>
+        </div>
 
-    <div v-else class="glass-card space-y-4 p-6">
+        <div class="flex flex-col gap-3 rounded-2xl border border-white/10 bg-white/5 p-4 lg:flex-row lg:items-center lg:justify-between">
+          <p class="text-xs leading-6 text-slate-400">
+            推荐只在确实需要代理 Playwright 浏览器流量时启用，并配合绕过列表避免本地回调误走代理。
+          </p>
+          <button
+            @click="saveRuntimeConfig"
+            :disabled="runtimeSaving || runtimeLoading"
+            class="btn-primary"
+          >
+            {{ runtimeSaving ? '保存中...' : '保存配置' }}
+          </button>
+        </div>
+      </div>
+
+      <div v-else class="space-y-4">
+        <div class="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+          <div v-for="field in currentRuntimeFields" :key="field.key" class="rounded-2xl border border-white/10 bg-white/5 p-4">
+            <label class="mb-2 block text-sm font-medium text-slate-300">
+              {{ field.prompt }}
+              <span v-if="isRuntimeRequired(field)" class="text-red-400">*</span>
+              <span v-if="field.key === 'API_KEY'" class="ml-1 text-xs text-slate-500">（留空自动生成）</span>
+            </label>
+            <input
+              v-model="runtimeForm[field.key]"
+              :type="fieldInputType(field.key)"
+              :placeholder="field.default || ''"
+              class="input-dark"
+            />
+          </div>
+        </div>
+
+        <div class="flex flex-col gap-3 rounded-2xl border border-white/10 bg-white/5 p-4 lg:flex-row lg:items-center lg:justify-between">
+          <p class="text-xs leading-6 text-slate-400">
+            {{ currentRuntimeCategoryMeta?.footer }}
+          </p>
+          <button
+            @click="saveRuntimeConfig"
+            :disabled="runtimeSaving || runtimeLoading"
+            class="btn-primary"
+          >
+            {{ runtimeSaving ? '保存中...' : '保存配置' }}
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <Settings
+      v-else-if="visualCategory === 'admin'"
+      :admin-status="adminStatus"
+      :codex-status="codexStatus"
+      section="admin"
+      @refresh="$emit('refresh')"
+      @admin-progress="$emit('admin-progress')"
+    />
+
+    <Settings
+      v-else-if="visualCategory === 'auto-check'"
+      :admin-status="adminStatus"
+      :codex-status="codexStatus"
+      section="auto-check"
+      @refresh="$emit('refresh')"
+      @admin-progress="$emit('admin-progress')"
+    />
+
+    <div v-else-if="visualCategory === 'source'" class="glass-card space-y-4 p-6">
       <div class="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
         <div>
           <div class="mb-2 inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-slate-300">
@@ -245,19 +368,58 @@ defineProps({
 
 const emit = defineEmits(['refresh', 'admin-progress'])
 
-const editModes = [
-  { key: 'visual', label: '可视化编辑', icon: '⚙️' },
+const runtimeCategoryKeys = {
+  cloudmail: ['CLOUDMAIL_BASE_URL', 'CLOUDMAIL_EMAIL', 'CLOUDMAIL_PASSWORD', 'CLOUDMAIL_DOMAIN'],
+  sync: ['SYNC_TARGET_CPA', 'SYNC_TARGET_SUB2API', 'CPA_URL', 'CPA_KEY', 'SUB2API_URL', 'SUB2API_EMAIL', 'SUB2API_PASSWORD', 'SUB2API_GROUP'],
+  proxy: ['PLAYWRIGHT_PROXY_URL', 'PLAYWRIGHT_PROXY_BYPASS'],
+  security: ['API_KEY'],
+}
+
+const runtimeCategoryMeta = {
+  cloudmail: {
+    icon: '📧',
+    badge: 'CloudMail',
+    title: 'CloudMail 配置',
+    description: '配置自动注册和收验证码所需的邮箱服务。账号池创建、轮转复用和验证码接收都会使用这里的设置。',
+    note: '带 * 的项会直接影响账号池操作；CloudMail 四项建议一起填写完整。',
+    footer: 'CloudMail 配置保存后会立即热加载；之后的注册、复用和验证码轮询会直接使用新配置。',
+  },
+  sync: {
+    icon: '☁️',
+    badge: 'Remote Sync',
+    title: '远端同步',
+    description: '先选择启用的远端同步目标，再填写对应的连接信息。账号池操作会根据这里的启用状态决定同步到哪些远端。',
+    note: '支持同时启用 CPA 和 Sub2API；界面只显示当前已启用目标的详细配置。',
+  },
+  proxy: {
+    icon: '🛰️',
+    badge: 'Proxy / Advanced',
+    title: '代理 / 高级',
+    description: '用于单独配置 Playwright 浏览器流量代理。属于低频项，默认折叠，避免把主配置界面堆得过满。',
+    note: '只有在代理 ChatGPT / Auth 页面访问时才建议配置；本地回调场景通常还需要设置 bypass。',
+  },
+  security: {
+    icon: '🔐',
+    badge: 'Security',
+    title: '安全 / 访问控制',
+    description: '入口级配置集中放在这里。API Key 决定 Web 面板和 HTTP API 的访问控制，不再和其他运行参数混在一起。',
+    note: '留空会自动生成新的 API Key；保存后前端会立即切换到新的密钥。',
+    footer: '这是控制面板和 API 的入口密钥。修改后会立即生效，并同步刷新当前浏览器里的 API Key。',
+  },
+}
+
+const visualCategories = [
+  { key: 'cloudmail', label: 'CloudMail', icon: '📧' },
+  { key: 'sync', label: '远端同步', icon: '☁️' },
+  { key: 'proxy', label: '代理 / 高级', icon: '🛰️' },
+  { key: 'security', label: '安全 / 访问控制', icon: '🔐' },
+  { key: 'admin', label: '管理员 / 主号', icon: '👤' },
+  { key: 'auto-check', label: '巡检设置', icon: '🔄' },
   { key: 'source', label: '源文件编辑', icon: '📝' },
 ]
 
-const visualCategories = [
-  { key: 'runtime', label: '运行配置', icon: '🧩' },
-  { key: 'admin', label: '管理员 / 主号', icon: '🔐' },
-  { key: 'auto-check', label: '巡检设置', icon: '🔄' },
-]
-
-const editMode = ref('visual')
-const visualCategory = ref('runtime')
+const visualCategory = ref('cloudmail')
+const proxyExpanded = ref(false)
 
 const runtimeFields = ref([])
 const runtimeForm = reactive({})
@@ -276,9 +438,105 @@ const sourceMessage = ref('')
 const sourceMessageClass = ref('')
 const runtimeRequiredKeys = new Set(['API_KEY'])
 
-const runtimeConfigured = computed(
-  () => runtimeFields.value.length > 0 && runtimeFields.value.every(field => !isRuntimeRequired(field) || field.configured),
-)
+const selectedRuntimeCategory = computed(() => runtimeCategoryKeys[visualCategory.value] ? visualCategory.value : '')
+const currentRuntimeCategoryMeta = computed(() => runtimeCategoryMeta[selectedRuntimeCategory.value] || null)
+
+function fieldByKey(key) {
+  return runtimeFields.value.find(field => field.key === key) || null
+}
+
+function fieldsByKeys(keys) {
+  return keys
+    .map(key => fieldByKey(key))
+    .filter(Boolean)
+}
+
+const cloudmailFields = computed(() => fieldsByKeys(runtimeCategoryKeys.cloudmail))
+const securityFields = computed(() => fieldsByKeys(runtimeCategoryKeys.security))
+const proxyFields = computed(() => fieldsByKeys(runtimeCategoryKeys.proxy))
+const syncToggleFields = computed(() => fieldsByKeys(['SYNC_TARGET_CPA', 'SYNC_TARGET_SUB2API']))
+
+const syncCpaEnabled = computed(() => String(runtimeForm.SYNC_TARGET_CPA || '').toLowerCase() === 'true')
+const syncSub2apiEnabled = computed(() => String(runtimeForm.SYNC_TARGET_SUB2API || '').toLowerCase() === 'true')
+const syncCpaFields = computed(() => syncCpaEnabled.value ? fieldsByKeys(['CPA_URL', 'CPA_KEY']) : [])
+const syncSub2apiFields = computed(() => syncSub2apiEnabled.value ? fieldsByKeys(['SUB2API_URL', 'SUB2API_EMAIL', 'SUB2API_PASSWORD', 'SUB2API_GROUP']) : [])
+
+const currentRuntimeFields = computed(() => {
+  if (selectedRuntimeCategory.value === 'cloudmail') {
+    return cloudmailFields.value
+  }
+  if (selectedRuntimeCategory.value === 'security') {
+    return securityFields.value
+  }
+  return []
+})
+
+const enabledSyncTargetsText = computed(() => {
+  const targets = []
+  if (syncCpaEnabled.value) {
+    targets.push('CPA')
+  }
+  if (syncSub2apiEnabled.value) {
+    targets.push('Sub2API')
+  }
+  return targets.length ? `已启用：${targets.join(' + ')}` : '当前未启用远端'
+})
+
+const currentRuntimeStatus = computed(() => {
+  if (!selectedRuntimeCategory.value) {
+    return {
+      label: '',
+      class: 'border-white/10 bg-white/5 text-slate-400',
+    }
+  }
+
+  if (selectedRuntimeCategory.value === 'sync') {
+    if (!syncCpaEnabled.value && !syncSub2apiEnabled.value) {
+      return {
+        label: '未启用',
+        class: 'border-white/10 bg-white/5 text-slate-400',
+      }
+    }
+
+    const cpaReady = !syncCpaEnabled.value || syncCpaFields.value.every(field => field.configured)
+    const sub2apiReady = !syncSub2apiEnabled.value || syncSub2apiFields.value.every(field => field.configured)
+
+    return cpaReady && sub2apiReady
+      ? {
+          label: '已配置',
+          class: 'border-emerald-400/20 bg-emerald-500/10 text-emerald-200',
+        }
+      : {
+          label: '未配置',
+          class: 'border-red-400/20 bg-red-500/10 text-red-200',
+        }
+  }
+
+  if (selectedRuntimeCategory.value === 'proxy') {
+    return proxyFields.value.some(field => field.configured)
+      ? {
+          label: '已设置',
+          class: 'border-emerald-400/20 bg-emerald-500/10 text-emerald-200',
+        }
+      : {
+          label: '未设置',
+          class: 'border-white/10 bg-white/5 text-slate-400',
+        }
+  }
+
+  const fields = currentRuntimeFields.value
+  const configured = fields.length > 0 && fields.every(field => !isRuntimeRequired(field) || field.configured)
+
+  return configured
+    ? {
+        label: '已配置',
+        class: 'border-emerald-400/20 bg-emerald-500/10 text-emerald-200',
+      }
+    : {
+        label: '未配置',
+        class: 'border-red-400/20 bg-red-500/10 text-red-200',
+      }
+})
 
 function setRuntimeMessage(text, type = 'success') {
   runtimeMessage.value = text
@@ -358,7 +616,9 @@ async function saveRuntimeConfig() {
     }
     setRuntimeMessage(result.message || '配置保存成功')
     runtimeSaved.value = true
-    window.setTimeout(() => { runtimeSaved.value = false }, 3000)
+    window.setTimeout(() => {
+      runtimeSaved.value = false
+    }, 3000)
     await loadRuntimeConfig()
     emit('refresh')
   } catch (e) {
@@ -400,7 +660,7 @@ async function saveSourceConfig() {
   }
 }
 
-watch(editMode, async (next) => {
+watch(visualCategory, async (next) => {
   if (next === 'source' && !sourceLoaded.value) {
     await loadSourceConfig()
   }

@@ -40,6 +40,7 @@ CPA_KEY = os.environ.get("CPA_KEY", "")
 SUB2API_URL = os.environ.get("SUB2API_URL", "")
 SUB2API_EMAIL = os.environ.get("SUB2API_EMAIL", "")
 SUB2API_PASSWORD = os.environ.get("SUB2API_PASSWORD", "")
+SUB2API_GROUP = os.environ.get("SUB2API_GROUP", "")
 
 # 轮询邮件间隔/超时（秒）
 EMAIL_POLL_INTERVAL = _get_int_env("EMAIL_POLL_INTERVAL", 3)
