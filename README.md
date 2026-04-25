@@ -22,11 +22,13 @@
 
 ## 它能做什么
 
-- 自动注册 Team 账号并获取 Codex 认证
-- 按额度自动轮转、补位、复用旧号
-- 自动巡检额度并触发轮转
-- 同步认证到 **CLIProxyAPI / Sub2API**
-- 提供 **Web 面板** 统一管理账号池、同步、OAuth、日志与配置
+| 功能 | 描述 |
+|---|---|
+| 📧 自动注册 | 自动注册 Team 账号并获取 Codex 认证 |
+| 🔄 智能轮转 | 按额度自动轮转、补位、复用旧号 |
+| 🔍 自动巡检 | 自动检查额度并触发轮转 |
+| ☁️ 远端同步 | 同步认证到 **CLIProxyAPI / Sub2API** |
+| 🔐 OAuth 导入 | 支持手动接管 OAuth 流程导入账号 |
 
 ## 支持的外部组件
 
@@ -112,19 +114,6 @@ CF_TEMP_EMAIL_BASE_URL=https://tempmail-xxx.pages.dev/admin/dashboard
 | `uv run autoteam pull-cpa` | 从 CPA 拉回本地 |
 | `uv run autoteam admin-login` | 管理员登录 |
 
-## Web 面板
-
-启动后访问 `http://localhost:8787`。
-
-- **仪表盘**：账号状态与常用操作
-- **Team 成员**：查看实际成员
-- **账号池操作**：轮转、补位、添加、清理
-- **同步中心**：同步本地 / 远端 / 拉取 CPA
-- **OAuth 登录**：手动接管 OAuth 流程
-- **任务历史**：查看后台任务结果
-- **日志**：实时日志
-- **配置面板**：邮箱服务、远端同步、安全、管理员、巡检、代理、源文件编辑
-
 ## 文档
 
 README 只保留概览，详细说明请直接看 docs：
@@ -135,6 +124,8 @@ README 只保留概览，详细说明请直接看 docs：
 - [API 文档](docs/api.md)
 - [工作原理](docs/architecture.md)
 - [常见问题](docs/troubleshooting.md)
+
+其中 Web 面板的页面划分与职责说明，见 [工作原理](docs/architecture.md)。
 
 ## 已知限制
 
