@@ -232,6 +232,46 @@ _OTP_INVALID_HINTS = (
     "验证码已过期",
 )
 
+_WORKSPACE_PAGE_HINTS = (
+    "choose a workspace",
+    "select a workspace",
+    "launch a workspace",
+    "workspace",
+    "personal workspace",
+    "personal account",
+    "选择一个工作空间",
+    "选择工作空间",
+)
+_WORKSPACE_IGNORE_LABELS = {
+    "choose a workspace",
+    "select a workspace",
+    "workspace",
+    "terms of use",
+    "privacy policy",
+    "continue",
+    "继续",
+    "allow",
+    "log in",
+    "cancel",
+    "back",
+    "resend email",
+    "use password",
+    "continue with password",
+    "log in with a one-time code",
+    "login with a one-time code",
+    "one-time code",
+    "email code",
+}
+_WORKSPACE_IGNORE_SUBSTRINGS = (
+    "new organization",
+    "finish setting up",
+    "set up on the next page",
+    "one-time code",
+    "email code",
+    "continue with password",
+    "use password",
+)
+
 
 def _is_otp_input_visible(page, timeout=500):
     try:
@@ -273,6 +313,77 @@ def _wait_for_otp_submit_result(page, timeout=12):
     if err:
         return "invalid", err
     return "pending", None
+
+
+def _is_workspace_ignored_label(text: str) -> bool:
+    lowered = str(text or "").strip().lower()
+    if lowered in _WORKSPACE_IGNORE_LABELS:
+        return True
+    return any(token in lowered for token in _WORKSPACE_IGNORE_SUBSTRINGS)
+
+
+def _is_workspace_selection_page(page) -> bool:
+    url = (page.url or "").lower()
+    if "workspace" in url:
+        return True
+
+    try:
+        body = page.locator("body").inner_text(timeout=1200).lower()
+    except Exception:
+        body = ""
+
+    hint_hits = sum(1 for hint in _WORKSPACE_PAGE_HINTS if hint in body)
+    if "organization" in url:
+        return hint_hits >= 2
+    return hint_hits >= 2 or "launch a workspace" in body
+
+
+def _workspace_label_candidates(page):
+    if not _is_workspace_selection_page(page):
+        return []
+
+    selectors = ("button", "a", '[role="button"]', '[role="option"]')
+    seen = set()
+    candidates = []
+    for selector in selectors:
+        try:
+            for loc in page.locator(selector).all():
+                try:
+                    if not loc.is_visible(timeout=100):
+                        continue
+                    text = re.sub(r"\s+", " ", loc.inner_text(timeout=200)).strip()
+                except Exception:
+                    continue
+                lowered = text.lower()
+                if not text or lowered in seen or len(text) > 80 or _is_workspace_ignored_label(lowered):
+                    continue
+                seen.add(lowered)
+                candidates.append((text, loc))
+        except Exception:
+            continue
+    return candidates
+
+
+def _select_team_workspace(page, workspace_name: str) -> bool:
+    preferred_name = str(workspace_name or "").strip()
+    if not preferred_name:
+        return False
+
+    preferred_name_lower = preferred_name.lower()
+    for text, loc in _workspace_label_candidates(page):
+        if text.strip().lower() != preferred_name_lower:
+            continue
+        try:
+            loc.click(timeout=3000)
+        except Exception:
+            try:
+                loc.click(force=True, timeout=3000)
+            except Exception:
+                return False
+        logger.info("[Codex] 选择 Team workspace: %s", text)
+        time.sleep(3)
+        return True
+    return False
 
 
 def login_codex_via_browser(email, password, mail_client=None, *, return_result=False):
@@ -422,29 +533,13 @@ def login_codex_via_browser(email, password, mail_client=None, *, return_result=
         _screenshot(_page, "codex_00_chatgpt_login.png")
         logger.info("[Codex] ChatGPT 登录后 URL: %s", _page.url)
 
-        # 如果是 workspace 选择页面，选择 Team
-        if "workspace" in _page.url:
+        # 如果是 workspace 选择页面，选择配置的 Team workspace
+        if _is_workspace_selection_page(_page):
             workspace_name = get_chatgpt_workspace_name()
             logger.info("[Codex] 检测到 workspace 选择页面...")
             try:
-                ws_btn = _page.locator(f'text="{workspace_name}"').first
-                if workspace_name and ws_btn.is_visible(timeout=3000):
-                    logger.info("[Codex] 选择 workspace: %s", workspace_name)
-                    ws_btn.click()
-                    time.sleep(5)
-                else:
-                    # fallback: 选第二个选项（第一个通常是"个人"）
-                    options = _page.locator('a, button, [role="button"]').all()
-                    for opt in options:
-                        try:
-                            text = opt.inner_text(timeout=1000).strip()
-                            if text and "个人" not in text and "Personal" not in text and text not in ("ChatGPT", ""):
-                                logger.info("[Codex] 选择 workspace: %s", text)
-                                opt.click()
-                                time.sleep(5)
-                                break
-                        except Exception:
-                            continue
+                if not _select_team_workspace(_page, workspace_name):
+                    logger.warning("[Codex] 未匹配到目标 Team workspace: %s", workspace_name or "<empty>")
             except Exception:
                 pass
             _screenshot(_page, "codex_00_after_workspace.png")
@@ -632,67 +727,13 @@ def login_codex_via_browser(email, password, mail_client=None, *, return_result=
 
             # 在任何页面中，如果有 workspace/组织选择，先选 Team
             try:
-                page_text = page.inner_text("body")[:1000]
-
-                # 选择 Team workspace（用配置的名称精确匹配）
                 workspace_name = get_chatgpt_workspace_name()
                 # 检测"选择一个工作空间"页面，点击 Team workspace
-                if workspace_name and (
-                    "选择一个工作空间" in page_text or "Select a workspace" in page_text or "选择工作空间" in page_text
-                ):
+                if _is_workspace_selection_page(page):
                     selected = False
                     _screenshot(page, f"codex_04_workspace_{step + 1}_before.png")
                     logger.info("[Codex] 检测到工作空间选择页 (step %d)，尝试选择: %s", step + 1, workspace_name)
-
-                    # 用 JS 直接点击包含 workspace 名称的元素（最可靠）
-                    try:
-                        clicked = page.evaluate(
-                            """(name) => {
-                            const els = document.querySelectorAll('*');
-                            for (const el of els) {
-                                const text = (el.textContent || '').trim();
-                                if (text === name && !text.includes('个人') && !text.includes('Personal')) {
-                                    // 找到最近的可点击父元素
-                                    let target = el;
-                                    while (target && target.tagName !== 'BODY') {
-                                        const tag = target.tagName.toLowerCase();
-                                        if (['button', 'a', 'li', 'label'].includes(tag)
-                                            || target.getAttribute('role')
-                                            || target.onclick
-                                            || target.classList.length > 0) {
-                                            target.click();
-                                            return true;
-                                        }
-                                        target = target.parentElement;
-                                    }
-                                    el.click();
-                                    return true;
-                                }
-                            }
-                            return false;
-                        }""",
-                            workspace_name,
-                        )
-                        if clicked:
-                            time.sleep(1)
-                            selected = True
-                            logger.info("[Codex] 已选择 workspace (JS): %s (step %d)", workspace_name, step + 1)
-                    except Exception as e:
-                        logger.warning("[Codex] JS 选择 workspace 失败: %s", e)
-
-                    if not selected:
-                        # fallback: Playwright 选择器
-                        try:
-                            ws_el = page.locator(f"text={workspace_name}").first
-                            if ws_el.is_visible(timeout=2000):
-                                ws_el.click(force=True)
-                                time.sleep(1)
-                                selected = True
-                                logger.info(
-                                    "[Codex] 已选择 workspace (force click): %s (step %d)", workspace_name, step + 1
-                                )
-                        except Exception:
-                            pass
+                    selected = _select_team_workspace(page, workspace_name)
 
                     _screenshot(page, f"codex_04_workspace_{step + 1}_after.png")
                     if selected:
@@ -708,17 +749,6 @@ def login_codex_via_browser(email, password, mail_client=None, *, return_result=
                         continue
                     else:
                         logger.warning("[Codex] 无法选择 workspace '%s' (step %d)", workspace_name, step + 1)
-
-                elif workspace_name:
-                    # 非工作空间选择页，但可能有 workspace 文本（如 organization 页）
-                    try:
-                        ws_btn = page.locator(f'text="{workspace_name}"').first
-                        if ws_btn.is_visible(timeout=1000):
-                            ws_btn.click()
-                            time.sleep(1)
-                            logger.info("[Codex] 已选择 workspace: %s (step %d)", workspace_name, step + 1)
-                    except Exception:
-                        pass
 
                 # Organization 页面的下拉选择
                 if "organization" in page.url:
@@ -1147,12 +1177,9 @@ class SessionCodexAuthFlow:
         acted = False
 
         try:
-            if "workspace" in self.page.url and self.workspace_name:
-                ws_btn = self.page.locator(f'text="{self.workspace_name}"').first
-                if ws_btn.is_visible(timeout=1000):
-                    ws_btn.click()
-                    logger.info("[Codex] 主号选择 workspace: %s", self.workspace_name)
-                    time.sleep(2)
+            if self.workspace_name and _is_workspace_selection_page(self.page):
+                if _select_team_workspace(self.page, self.workspace_name):
+                    logger.info("[Codex] 主号已选择目标 workspace")
                     acted = True
         except Exception:
             pass
