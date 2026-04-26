@@ -292,6 +292,46 @@ def test_put_runtime_config_allows_partial_runtime_fields_when_api_key_exists(mo
     assert "CPA_URL" not in written
 
 
+def test_put_runtime_config_accepts_numeric_sub2api_fields(monkeypatch):
+    written = {}
+
+    def fake_write_env(key, value):
+        written[key] = value
+
+    monkeypatch.setattr("autoteam.setup_wizard._write_env", fake_write_env)
+    monkeypatch.setattr(
+        "autoteam.setup_wizard._verify_mail_provider",
+        lambda provider=None: (_ for _ in ()).throw(AssertionError("mail provider verify should not run")),
+    )
+    monkeypatch.setattr(
+        "autoteam.setup_wizard._verify_cpa",
+        lambda: (_ for _ in ()).throw(AssertionError("cpa verify should not run")),
+    )
+    monkeypatch.setattr("importlib.reload", lambda module: module)
+    monkeypatch.setattr(api, "API_KEY", "old-key")
+    monkeypatch.setenv("API_KEY", "old-key")
+
+    result = api.put_runtime_config(
+        api.SetupConfig(
+            API_KEY="old-key",
+            SUB2API_CONCURRENCY=15,
+            SUB2API_PRIORITY=2,
+            SUB2API_RATE_MULTIPLIER=1.5,
+            SUB2API_AUTO_PAUSE_ON_EXPIRED=True,
+            SUB2API_OPENAI_PASSTHROUGH=False,
+            SUB2API_OVERWRITE_ACCOUNT_SETTINGS=True,
+        )
+    )
+
+    assert result["message"] == "配置保存成功"
+    assert written["SUB2API_CONCURRENCY"] == "15"
+    assert written["SUB2API_PRIORITY"] == "2"
+    assert written["SUB2API_RATE_MULTIPLIER"] == "1.5"
+    assert written["SUB2API_AUTO_PAUSE_ON_EXPIRED"] == "true"
+    assert written["SUB2API_OPENAI_PASSTHROUGH"] == "false"
+    assert written["SUB2API_OVERWRITE_ACCOUNT_SETTINGS"] == "true"
+
+
 @pytest.mark.parametrize(
     ("payload", "message"),
     [

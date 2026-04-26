@@ -833,7 +833,8 @@ async function saveRuntimeConfig() {
   try {
     const payload = {}
     for (const field of runtimeFields.value) {
-      payload[field.key] = runtimeForm[field.key] ?? ''
+      const value = runtimeForm[field.key]
+      payload[field.key] = value == null ? '' : String(value)
     }
     const result = await api.saveRuntimeConfig(payload)
     if (result.api_key) {
