@@ -2127,7 +2127,7 @@ def cmd_rotate(target_seats=5, force_auth_repair=False):
                 pool_active = current_pool_active_count()
                 if pool_active < ACTIVE_TARGET:
                     logger.warning(
-                        "[4/5] Team 已满 (%d/%d)，但可用 Codex active 仍不足 (%d/%d)",
+                        "[4/5] Team 已满 (%d/%d)，但本地管理可用账号仅 %d/%d",
                         current_count,
                         TARGET,
                         pool_active,
@@ -2135,7 +2135,7 @@ def cmd_rotate(target_seats=5, force_auth_repair=False):
                     )
                 else:
                     logger.info(
-                        "[4/5] Team 已满 (%d/%d)，可用 Codex active: %d/%d",
+                        "[4/5] Team 已满 (%d/%d)，本地管理可用账号: %d/%d",
                         current_count,
                         TARGET,
                         pool_active,
@@ -2231,7 +2231,7 @@ def cmd_rotate(target_seats=5, force_auth_repair=False):
                 pool_active = current_pool_active_count()
                 if pool_active < ACTIVE_TARGET:
                     logger.warning(
-                        "[4/5] Team 成员数已达到目标，但可用 Codex active 仍不足 (%d/%d)，停止继续补位",
+                        "[4/5] Team 成员数已达到目标，但本地管理可用账号仅 %d/%d，停止继续补位",
                         pool_active,
                         ACTIVE_TARGET,
                     )
@@ -2255,7 +2255,7 @@ def cmd_rotate(target_seats=5, force_auth_repair=False):
                 logger.info("[4/5] 已用旧账号填满空缺")
             else:
                 logger.warning(
-                    "[4/5] Team 已满，但可用 Codex active 仍不足 (%d/%d)，无法继续通过补位修复",
+                    "[4/5] Team 已满，但本地管理可用账号仅 %d/%d，无法继续通过补位修复",
                     pool_active,
                     ACTIVE_TARGET,
                 )
@@ -2273,7 +2273,7 @@ def cmd_rotate(target_seats=5, force_auth_repair=False):
                     pool_active = current_pool_active_count()
                     if pool_active < ACTIVE_TARGET:
                         logger.warning(
-                            "[5/5] Team 成员数已达到目标，但可用 Codex active 仍不足 (%d/%d)，停止继续创建",
+                            "[5/5] Team 成员数已达到目标，但本地管理可用账号仅 %d/%d，停止继续创建",
                             pool_active,
                             ACTIVE_TARGET,
                         )
@@ -2289,7 +2289,7 @@ def cmd_rotate(target_seats=5, force_auth_repair=False):
             logger.warning("[轮转] 最终 Team 成员数查询失败，使用本地 Team 占位估算: %d/%d", final_count, TARGET)
         final_pool_active = current_pool_active_count()
         logger.info(
-            "[轮转] 最终 Team 成员数: %d/%d，可用 Codex active: %d/%d",
+            "[轮转] 最终 Team 成员数: %d/%d，本地管理可用账号: %d/%d",
             final_count,
             TARGET,
             final_pool_active,
@@ -2300,7 +2300,7 @@ def cmd_rotate(target_seats=5, force_auth_repair=False):
         elif 0 <= final_count < TARGET:
             logger.warning("[轮转] 最终 Team 成员数仍低于目标 (%d/%d)", final_count, TARGET)
         elif final_pool_active < ACTIVE_TARGET:
-            logger.warning("[轮转] Team 已满，但可用 Codex active 仍不足 (%d/%d)", final_pool_active, ACTIVE_TARGET)
+            logger.warning("[轮转] Team 已满，但本地管理可用账号仅 %d/%d", final_pool_active, ACTIVE_TARGET)
 
     finally:
         if _chatgpt_session_ready(chatgpt):
