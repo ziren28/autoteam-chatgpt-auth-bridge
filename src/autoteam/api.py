@@ -1918,14 +1918,21 @@ def post_account_login(params: LoginAccountParams):
 @app.get("/api/status")
 def get_status():
     """获取所有账号状态 + active 账号实时额度"""
-    from autoteam.accounts import STATUS_ACTIVE, STATUS_EXHAUSTED, STATUS_PENDING, STATUS_STANDBY, load_accounts
+    from autoteam.accounts import (
+        STATUS_ACTIVE,
+        STATUS_AUTH_PENDING,
+        STATUS_EXHAUSTED,
+        STATUS_PENDING,
+        STATUS_STANDBY,
+        load_accounts,
+    )
     from autoteam.codex_auth import check_codex_quota, quota_result_quota_info
 
     accounts = load_accounts()
     quota_cache = {}
 
     for acc in accounts:
-        if acc["status"] != STATUS_ACTIVE and not _is_main_account_email(acc.get("email")):
+        if acc["status"] not in (STATUS_ACTIVE, STATUS_AUTH_PENDING) and not _is_main_account_email(acc.get("email")):
             continue
 
         auth_file = _resolve_status_auth_file(acc)
@@ -1950,6 +1957,7 @@ def get_status():
 
     summary = {
         "active": sum(1 for a in sanitized_accounts if a["status"] == STATUS_ACTIVE),
+        "auth_pending": sum(1 for a in sanitized_accounts if a["status"] == STATUS_AUTH_PENDING),
         "standby": sum(1 for a in sanitized_accounts if a["status"] == STATUS_STANDBY),
         "exhausted": sum(1 for a in sanitized_accounts if a["status"] == STATUS_EXHAUSTED),
         "pending": sum(1 for a in sanitized_accounts if a["status"] == STATUS_PENDING),
@@ -2192,7 +2200,7 @@ def post_check():
     from autoteam.manager import cmd_check
 
     def _run():
-        exhausted = cmd_check()
+        exhausted = cmd_check(force_auth_repair=True)
         return {"exhausted": [a["email"] for a in exhausted]}
 
     task = _start_task("check", _run, {})
@@ -2206,7 +2214,12 @@ def post_rotate(params: TaskParams = TaskParams()):
 
     from autoteam.manager import cmd_rotate
 
-    task = _start_task("rotate", cmd_rotate, {"target": params.target}, params.target)
+    task = _start_task(
+        "rotate",
+        lambda target: cmd_rotate(target, force_auth_repair=True),
+        {"target": params.target},
+        params.target,
+    )
     return task
 
 
@@ -2365,10 +2378,12 @@ def _auto_check_wait(interval_seconds, poll_seconds=0.2):
 
 def _auto_check_loop():
     """后台巡检线程：定期检查额度，多个账号低于阈值时自动轮转"""
-    from autoteam.accounts import STATUS_ACTIVE, load_accounts
+    from autoteam.accounts import STATUS_ACTIVE, STATUS_AUTH_PENDING, load_accounts
     from autoteam.codex_auth import check_codex_quota
+    from autoteam.manager import _auth_repair_skip_reason, _count_pool_active_accounts, _pool_active_target
 
     target_seats = 5
+    pool_active_target = _pool_active_target(target_seats)
 
     while not _auto_check_stop.is_set():
         try:
@@ -2394,9 +2409,20 @@ def _auto_check_loop():
         try:
             cfg = _auto_check_config  # 重新读取
             accounts = load_accounts()
-            local_active_count = sum(
-                1 for a in accounts if a["status"] == STATUS_ACTIVE and not _is_main_account_email(a.get("email"))
-            )
+            account_by_email = {
+                (a.get("email") or "").strip().lower(): a for a in accounts if (a.get("email") or "").strip()
+            }
+            local_active_count = _count_pool_active_accounts(accounts, require_auth=True)
+            auth_pending_accounts = [
+                a for a in accounts if a["status"] == STATUS_AUTH_PENDING and not _is_main_account_email(a.get("email"))
+            ]
+            missing_auth_accounts = [
+                a
+                for a in accounts
+                if a["status"] == STATUS_ACTIVE
+                and not _is_main_account_email(a.get("email"))
+                and not (a.get("auth_file") and Path(a["auth_file"]).exists())
+            ]
             active = [
                 a
                 for a in accounts
@@ -2407,6 +2433,7 @@ def _auto_check_loop():
             ]
 
             low_accounts = []
+            auth_problem_accounts = []
             for acc in active:
                 try:
                     auth_data = json.loads(read_text(Path(acc["auth_file"])))
@@ -2420,6 +2447,8 @@ def _auto_check_loop():
                             low_accounts.append((acc["email"], remaining, status, info))
                     elif status == "exhausted":
                         low_accounts.append((acc["email"], 0, status, info))
+                    elif status == "auth_error":
+                        auth_problem_accounts.append(acc["email"])
                 except Exception:
                     pass
 
@@ -2429,12 +2458,35 @@ def _auto_check_loop():
                     len(low_accounts),
                     ", ".join(f"{e}({r}%)" for e, r, _status, _info in low_accounts),
                 )
+            if auth_problem_accounts:
+                logger.info(
+                    "[巡检] %d 个账号认证待修复: %s",
+                    len(auth_problem_accounts),
+                    ", ".join(auth_problem_accounts),
+                )
 
-            shortage = max(0, target_seats - local_active_count)
+            seat_shortage = max(0, target_seats - 1 - local_active_count)
             actual_team_count = -1
             team_count_check_failed = False
             trigger_rotate = len(low_accounts) >= cfg["min_low"]
             trigger_cleanup = False
+            trigger_auth_repair = False
+            repair_candidates = list(auth_problem_accounts)
+
+            if auth_pending_accounts:
+                repair_candidates.extend(a["email"] for a in auth_pending_accounts)
+            if missing_auth_accounts:
+                repair_candidates.extend(a["email"] for a in missing_auth_accounts)
+            repair_candidates = list(dict.fromkeys(repair_candidates))
+            actionable_repair_candidates = []
+            throttled_repair_candidates = []
+            for candidate_email in repair_candidates:
+                acc = account_by_email.get(candidate_email.lower())
+                skip_reason = _auth_repair_skip_reason(acc, force=False)
+                if skip_reason:
+                    throttled_repair_candidates.append((candidate_email, skip_reason))
+                else:
+                    actionable_repair_candidates.append(candidate_email)
 
             if not trigger_rotate:
                 actual_team_count = _auto_check_team_member_count()
@@ -2442,15 +2494,17 @@ def _auto_check_loop():
                     team_count_check_failed = True
                 elif actual_team_count > target_seats:
                     trigger_cleanup = True
-                    shortage = 0
+                    seat_shortage = 0
                 else:
-                    shortage = max(0, target_seats - actual_team_count)
-                    trigger_rotate = shortage > 0
+                    team_shortage = max(0, target_seats - actual_team_count)
+                    trigger_rotate = team_shortage > 0
+                    if not trigger_rotate and actual_team_count >= target_seats and actionable_repair_candidates:
+                        trigger_auth_repair = True
 
-            if trigger_rotate or trigger_cleanup:
+            if trigger_rotate or trigger_cleanup or trigger_auth_repair:
                 # 检查是否有任务在跑
                 if not _playwright_lock.acquire(blocking=False):
-                    logger.info("[巡检] 有任务正在执行，跳过本轮自动轮转/补位/清理")
+                    logger.info("[巡检] 有任务正在执行，跳过本轮自动轮转/补位/清理/认证修复")
                     continue
                 _playwright_lock.release()
 
@@ -2481,13 +2535,13 @@ def _auto_check_loop():
                             status_kwargs["quota_resets_at"] = quota_result_resets_at(info) or int(time.time() + 18000)
                         update_account(email, **status_kwargs)
 
-                    if shortage > 0 and len(low_accounts) >= cfg["min_low"]:
+                    if seat_shortage > 0 and len(low_accounts) >= cfg["min_low"]:
                         logger.info(
-                            "[巡检] 当前 active 数不足: %d/%d，且检测到低额度账号，触发自动轮转...",
+                            "[巡检] 当前可用 active 数不足: %d/%d，且检测到低额度账号，触发自动轮转...",
                             local_active_count,
-                            target_seats,
+                            pool_active_target,
                         )
-                    elif shortage > 0:
+                    elif actual_team_count >= 0 and actual_team_count < target_seats:
                         logger.info(
                             "[巡检] Team 实际成员数不足（%d/%d），触发自动补位...",
                             actual_team_count,
@@ -2504,13 +2558,45 @@ def _auto_check_loop():
                             {
                                 "target": target_seats,
                                 "trigger": "auto-check",
-                                "shortage": shortage,
+                                "shortage": max(0, target_seats - actual_team_count)
+                                if actual_team_count >= 0
+                                else seat_shortage,
                                 "low_accounts": len(low_accounts),
                             },
                             target_seats,
                         )
                     except Exception as e:
                         logger.error("[巡检] 自动轮转失败: %s", e)
+                elif trigger_auth_repair:
+                    try:
+                        _require_pool_operation_configs("自动认证修复")
+                    except HTTPException as exc:
+                        logger.warning("[巡检] 跳过自动认证修复: %s", exc.detail)
+                        continue
+
+                    logger.info(
+                        "[巡检] Team 实际成员数已满足（%d/%d），但可用 Codex active 仅 %d/%d，触发自动认证修复...",
+                        actual_team_count,
+                        target_seats,
+                        local_active_count,
+                        pool_active_target,
+                    )
+                    from autoteam.manager import cmd_check
+
+                    try:
+                        _start_task(
+                            "auto-auth-repair",
+                            cmd_check,
+                            {
+                                "trigger": "auto-check",
+                                "team_count": actual_team_count,
+                                "pool_active": local_active_count,
+                                "pool_active_target": pool_active_target,
+                                "repair_candidates": actionable_repair_candidates,
+                            },
+                        )
+                    except Exception as e:
+                        logger.error("[巡检] 自动认证修复失败: %s", e)
                 else:
                     logger.info(
                         "[巡检] Team 实际成员数超出目标（%d/%d），触发自动清理...",
@@ -2549,16 +2635,32 @@ def _auto_check_loop():
                     )
                 elif team_count_check_failed:
                     logger.info("[巡检] Team 成员数校验失败，且未达到低额度触发阈值，跳过本轮自动动作")
-                elif actual_team_count >= target_seats and local_active_count < target_seats:
+                elif actual_team_count >= target_seats and actionable_repair_candidates:
                     logger.info(
-                        "[巡检] Team 实际成员数已满足（%d/%d），当前本地 active=%d/%d，无需补位",
+                        "[巡检] Team 实际成员数已满足（%d/%d），但存在 %d 个待修复账号，等待下一轮自动认证修复",
+                        actual_team_count,
+                        target_seats,
+                        len(actionable_repair_candidates),
+                    )
+                elif actual_team_count >= target_seats and throttled_repair_candidates:
+                    logger.info(
+                        "[巡检] Team 实际成员数已满足（%d/%d），但 %d 个待修复账号仍在冷却/暂停中，暂不自动重试",
+                        actual_team_count,
+                        target_seats,
+                        len(throttled_repair_candidates),
+                    )
+                elif actual_team_count >= target_seats and local_active_count < pool_active_target:
+                    logger.info(
+                        "[巡检] Team 实际成员数已满足（%d/%d），但本地可用 active 仅 %d/%d，且未发现可自动修复的本地账号",
                         actual_team_count,
                         target_seats,
                         local_active_count,
-                        target_seats,
+                        pool_active_target,
                     )
                 else:
-                    logger.info("[巡检] 额度正常且 active 数充足（%d/%d），无需轮转", local_active_count, target_seats)
+                    logger.info(
+                        "[巡检] 额度正常且 active 数充足（%d/%d），无需轮转", local_active_count, pool_active_target
+                    )
 
         except Exception as e:
             logger.error("[巡检] 巡检异常: %s", e)

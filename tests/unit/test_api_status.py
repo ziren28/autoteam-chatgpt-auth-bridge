@@ -63,6 +63,7 @@ def test_get_status_normalizes_main_account_status_from_saved_auth(tmp_path, mon
     assert result["accounts"][0]["status"] == "active"
     assert result["summary"] == {
         "active": 1,
+        "auth_pending": 0,
         "standby": 0,
         "exhausted": 0,
         "pending": 0,
@@ -724,6 +725,7 @@ def test_auto_check_persists_reuse_blocking_metadata_before_rotate(tmp_path, mon
     monkeypatch.setattr(api, "_auto_check_config", {"interval": 0, "threshold": 10, "min_low": 2})
     monkeypatch.setattr(api, "_auto_check_stop", __import__("threading").Event())
     monkeypatch.setattr(api, "_auto_check_restart", __import__("threading").Event())
+    monkeypatch.setattr(api, "_maybe_reload_runtime_config_from_env_file", lambda *args, **kwargs: False)
     monkeypatch.setattr(api, "_is_main_account_email", lambda _email: False)
     monkeypatch.setattr(
         "autoteam.accounts.load_accounts",
@@ -916,6 +918,7 @@ def test_auto_check_triggers_rotate_when_active_count_is_below_target(tmp_path, 
     monkeypatch.setattr(api, "_auto_check_config", {"interval": 0, "threshold": 10, "min_low": 2})
     monkeypatch.setattr(api, "_auto_check_stop", __import__("threading").Event())
     monkeypatch.setattr(api, "_auto_check_restart", __import__("threading").Event())
+    monkeypatch.setattr(api, "_maybe_reload_runtime_config_from_env_file", lambda *args, **kwargs: False)
     monkeypatch.setattr(api, "_is_main_account_email", lambda _email: False)
     monkeypatch.setattr(
         "autoteam.accounts.load_accounts",
@@ -952,7 +955,9 @@ def test_auto_check_triggers_rotate_when_active_count_is_below_target(tmp_path, 
     assert started[0]["args"] == (5,)
 
 
-def test_auto_check_skips_shortage_rotate_when_team_is_already_full(tmp_path, monkeypatch):
+def test_auto_check_does_not_rotate_when_team_is_full_but_no_local_repair_candidate_exists(
+    tmp_path, monkeypatch, caplog
+):
     auth_files = []
     for idx in range(3):
         auth_file = tmp_path / f"active-{idx}.json"
@@ -967,6 +972,7 @@ def test_auto_check_skips_shortage_rotate_when_team_is_already_full(tmp_path, mo
     monkeypatch.setattr(api, "_auto_check_config", {"interval": 0, "threshold": 10, "min_low": 2})
     monkeypatch.setattr(api, "_auto_check_stop", __import__("threading").Event())
     monkeypatch.setattr(api, "_auto_check_restart", __import__("threading").Event())
+    monkeypatch.setattr(api, "_maybe_reload_runtime_config_from_env_file", lambda *args, **kwargs: False)
     monkeypatch.setattr(api, "_is_main_account_email", lambda _email: False)
     monkeypatch.setattr(
         "autoteam.accounts.load_accounts",
@@ -992,9 +998,11 @@ def test_auto_check_skips_shortage_rotate_when_team_is_already_full(tmp_path, mo
 
     monkeypatch.setattr(stop_event, "wait", fake_wait)
 
-    api._auto_check_loop()
+    with caplog.at_level(logging.INFO):
+        api._auto_check_loop()
 
     assert started == []
+    assert "Team 实际成员数已满足（5/5），但本地可用 active 仅 3/4，且未发现可自动修复的本地账号" in caplog.text
 
 
 def test_auto_check_logs_threshold_message_when_team_is_full_but_low_accounts_are_below_min_low(
@@ -1009,6 +1017,7 @@ def test_auto_check_logs_threshold_message_when_team_is_full_but_low_accounts_ar
     monkeypatch.setattr(api, "_auto_check_config", {"interval": 0, "threshold": 10, "min_low": 2})
     monkeypatch.setattr(api, "_auto_check_stop", __import__("threading").Event())
     monkeypatch.setattr(api, "_auto_check_restart", __import__("threading").Event())
+    monkeypatch.setattr(api, "_maybe_reload_runtime_config_from_env_file", lambda *args, **kwargs: False)
     monkeypatch.setattr(api, "_is_main_account_email", lambda _email: False)
     monkeypatch.setattr(
         "autoteam.accounts.load_accounts",
@@ -1044,6 +1053,119 @@ def test_auto_check_logs_threshold_message_when_team_is_full_but_low_accounts_ar
     assert "额度正常且 active 数充足（3/5），无需轮转" not in caplog.text
 
 
+def test_auto_check_triggers_auth_repair_when_team_is_full_but_local_auth_pending_exists(tmp_path, monkeypatch):
+    auth_files = []
+    for idx in range(3):
+        auth_file = tmp_path / f"active-{idx}.json"
+        auth_file.write_text(json.dumps({"access_token": f"token-{idx}"}), encoding="utf-8")
+        auth_files.append(auth_file)
+
+    started = []
+
+    def fake_start_task(command, func, params, *args, **kwargs):
+        started.append((command, params, args, kwargs))
+
+    monkeypatch.setattr(api, "_auto_check_config", {"interval": 0, "threshold": 10, "min_low": 2})
+    monkeypatch.setattr(api, "_auto_check_stop", __import__("threading").Event())
+    monkeypatch.setattr(api, "_auto_check_restart", __import__("threading").Event())
+    monkeypatch.setattr(api, "_maybe_reload_runtime_config_from_env_file", lambda *args, **kwargs: False)
+    monkeypatch.setattr(api, "_is_main_account_email", lambda _email: False)
+    monkeypatch.setattr(
+        "autoteam.accounts.load_accounts",
+        lambda: (
+            [
+                {"email": f"active-{idx}@example.com", "status": "active", "auth_file": str(auth_files[idx])}
+                for idx in range(3)
+            ]
+            + [{"email": "pending-auth@example.com", "status": "auth_pending", "auth_file": None}]
+        ),
+    )
+    monkeypatch.setattr(
+        "autoteam.codex_auth.check_codex_quota",
+        lambda _token: ("ok", {"primary_pct": 10, "primary_resets_at": 1234567890, "weekly_pct": 1}),
+    )
+    monkeypatch.setattr(api, "_auto_check_team_member_count", lambda: 5)
+    monkeypatch.setattr(api, "_require_pool_operation_configs", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(api, "_start_task", fake_start_task)
+
+    stop_event = api._auto_check_stop
+    wait_calls = {"count": 0}
+
+    def fake_wait(_seconds):
+        wait_calls["count"] += 1
+        return wait_calls["count"] > 1
+
+    monkeypatch.setattr(stop_event, "wait", fake_wait)
+
+    api._auto_check_loop()
+
+    assert len(started) == 1
+    command, params, args, kwargs = started[0]
+    assert command == "auto-auth-repair"
+    assert params["trigger"] == "auto-check"
+    assert params["team_count"] == 5
+    assert params["pool_active"] == 3
+    assert params["pool_active_target"] == 4
+    assert params["repair_candidates"] == ["pending-auth@example.com"]
+    assert args == ()
+    assert kwargs == {}
+
+
+def test_auto_check_skips_auth_repair_when_candidates_are_throttled(tmp_path, monkeypatch, caplog):
+    auth_files = []
+    for idx in range(3):
+        auth_file = tmp_path / f"active-{idx}.json"
+        auth_file.write_text(json.dumps({"access_token": f"token-{idx}"}), encoding="utf-8")
+        auth_files.append(auth_file)
+
+    started = []
+
+    monkeypatch.setattr(api, "_auto_check_config", {"interval": 0, "threshold": 10, "min_low": 2})
+    monkeypatch.setattr(api, "_auto_check_stop", __import__("threading").Event())
+    monkeypatch.setattr(api, "_auto_check_restart", __import__("threading").Event())
+    monkeypatch.setattr(api, "_maybe_reload_runtime_config_from_env_file", lambda *args, **kwargs: False)
+    monkeypatch.setattr(api, "_is_main_account_email", lambda _email: False)
+    monkeypatch.setattr(
+        "autoteam.accounts.load_accounts",
+        lambda: (
+            [
+                {"email": f"active-{idx}@example.com", "status": "active", "auth_file": str(auth_files[idx])}
+                for idx in range(3)
+            ]
+            + [
+                {
+                    "email": "paused-auth@example.com",
+                    "status": "auth_pending",
+                    "auth_file": None,
+                    "auth_retry_paused": True,
+                    "auth_last_error": "add_phone",
+                }
+            ]
+        ),
+    )
+    monkeypatch.setattr(
+        "autoteam.codex_auth.check_codex_quota",
+        lambda _token: ("ok", {"primary_pct": 10, "primary_resets_at": 1234567890, "weekly_pct": 1}),
+    )
+    monkeypatch.setattr(api, "_auto_check_team_member_count", lambda: 5)
+    monkeypatch.setattr(api, "_start_task", lambda *args, **kwargs: started.append((args, kwargs)))
+
+    stop_event = api._auto_check_stop
+    wait_calls = {"count": 0}
+
+    def fake_wait(_seconds):
+        wait_calls["count"] += 1
+        return wait_calls["count"] > 1
+
+    monkeypatch.setattr(stop_event, "wait", fake_wait)
+
+    with caplog.at_level(logging.INFO):
+        api._auto_check_loop()
+
+    assert started == []
+    assert "待修复账号仍在冷却/暂停中，暂不自动重试" in caplog.text
+
+
 def test_auto_check_triggers_cleanup_when_team_count_exceeds_target(tmp_path, monkeypatch):
     auth_files = []
     for idx in range(4):
@@ -1065,6 +1187,7 @@ def test_auto_check_triggers_cleanup_when_team_count_exceeds_target(tmp_path, mo
     monkeypatch.setattr(api, "_auto_check_config", {"interval": 0, "threshold": 10, "min_low": 2})
     monkeypatch.setattr(api, "_auto_check_stop", __import__("threading").Event())
     monkeypatch.setattr(api, "_auto_check_restart", __import__("threading").Event())
+    monkeypatch.setattr(api, "_maybe_reload_runtime_config_from_env_file", lambda *args, **kwargs: False)
     monkeypatch.setattr(api, "_is_main_account_email", lambda _email: False)
     monkeypatch.setattr(
         "autoteam.accounts.load_accounts",

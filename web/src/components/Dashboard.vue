@@ -1,7 +1,7 @@
 <template>
   <div v-if="status">
     <!-- 统计卡片 -->
-    <div class="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-6">
+    <div class="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-5 gap-4 mb-6">
       <div v-for="card in cards" :key="card.label"
         class="bg-gray-900 border border-gray-800 rounded-xl p-4">
         <div class="text-sm text-gray-400">{{ card.label }}</div>
@@ -185,6 +185,7 @@ const cards = computed(() => {
   const s = props.status.summary
   return [
     { label: '活跃', value: s.active, color: 'text-green-400' },
+    { label: '待修复', value: s.auth_pending || 0, color: 'text-cyan-400' },
     { label: '待命', value: s.standby, color: 'text-yellow-400' },
     { label: '额度用完', value: s.exhausted, color: 'text-red-400' },
     { label: '总计', value: s.total, color: 'text-white' },
@@ -194,6 +195,7 @@ const cards = computed(() => {
 function statusClass(s) {
   return {
     active: 'bg-green-500/10 text-green-400',
+    auth_pending: 'bg-cyan-500/10 text-cyan-400',
     exhausted: 'bg-red-500/10 text-red-400',
     standby: 'bg-yellow-500/10 text-yellow-400',
     pending: 'bg-gray-500/10 text-gray-400',
@@ -203,6 +205,7 @@ function statusClass(s) {
 function dotClass(s) {
   return {
     active: 'bg-green-400',
+    auth_pending: 'bg-cyan-400',
     exhausted: 'bg-red-400',
     standby: 'bg-yellow-400',
     pending: 'bg-gray-400',
@@ -210,7 +213,13 @@ function dotClass(s) {
 }
 
 function statusLabel(s) {
-  return { active: 'Active', exhausted: 'Used up', standby: 'Standby', pending: 'Pending' }[s] || s
+  return {
+    active: 'Active',
+    auth_pending: 'Auth pending',
+    exhausted: 'Used up',
+    standby: 'Standby',
+    pending: 'Pending',
+  }[s] || s
 }
 
 function quota(acc, type) {
