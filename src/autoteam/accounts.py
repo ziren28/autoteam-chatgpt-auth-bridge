@@ -16,6 +16,7 @@ STATUS_ACTIVE = "active"  # 在 team 中，额度可用
 STATUS_EXHAUSTED = "exhausted"  # 在 team 中，额度用完
 STATUS_STANDBY = "standby"  # 已移出 team，等待额度恢复
 STATUS_PENDING = "pending"  # 已邀请，等待注册完成
+STATUS_AUTH_PENDING = "auth_pending"  # 已在 team 中，但 Codex 认证未就绪
 
 
 def _normalized_email(value):
@@ -78,6 +79,12 @@ def add_account(email, password, cloudmail_account_id=None, *, mail_provider=Non
             "quota_resets_at": None,  # 额度恢复时间
             "created_at": time.time(),
             "last_active_at": None,
+            "auth_retry_count": 0,
+            "auth_last_error": None,
+            "auth_last_error_detail": None,
+            "auth_last_failed_at": None,
+            "auth_retry_after": None,
+            "auth_retry_paused": False,
         }
     )
     save_accounts(accounts)

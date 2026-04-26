@@ -62,6 +62,34 @@ def _screenshot(page, name):
     page.screenshot(path=str(SCREENSHOT_DIR / name), full_page=True)
 
 
+def _page_excerpt(page, limit=240):
+    try:
+        text = page.locator("body").inner_text(timeout=1500)
+        text = re.sub(r"\s+", " ", text).strip()
+        return text[:limit]
+    except Exception:
+        return ""
+
+
+def _classify_oauth_failure(url, body_excerpt=""):
+    url = (url or "").lower()
+    body = (body_excerpt or "").lower()
+
+    if "add-phone" in url:
+        return "add_phone", "需要手机号验证", False
+    if "verify you are human" in body or "captcha" in body:
+        return "human_verification", "命中人机验证", False
+    if "unable to load site" in body or "try again later" in body or "status page" in body:
+        return "site_unavailable", "站点暂时不可用或代理异常", True
+    if "email-verification" in url:
+        return "email_verification", "卡在邮箱验证码页", True
+    if "workspace" in url:
+        return "workspace_selection", "卡在 workspace 选择页", True
+    if "/auth/login" in url or "log-in-or-create-account" in url:
+        return "login_state_lost", "登录态丢失或回到了登录页", True
+    return "auth_code_missing", f"未获取到 auth code（停留在 {url or 'unknown'}）", True
+
+
 def _build_auth_url(code_challenge, state):
     params = {
         "client_id": CODEX_CLIENT_ID,
@@ -247,11 +275,13 @@ def _wait_for_otp_submit_result(page, timeout=12):
     return "pending", None
 
 
-def login_codex_via_browser(email, password, mail_client=None):
+def login_codex_via_browser(email, password, mail_client=None, *, return_result=False):
     """
     通过 Playwright 自动完成 Codex OAuth 登录。
     mail_client: CloudMailClient 实例，用于自动读取登录验证码。
     返回 auth bundle: {access_token, refresh_token, id_token, account_id, email, plan_type}
+    return_result=True 时返回:
+      {ok: bool, bundle: dict|None, error_type: str|None, error_detail: str|None, retryable: bool}
     """
     code_verifier, code_challenge = _generate_pkce()
     state = secrets.token_urlsafe(16)
@@ -264,6 +294,7 @@ def login_codex_via_browser(email, password, mail_client=None):
     logger.info("[Codex] 开始 OAuth 登录: %s", email)
 
     auth_code = None
+    failure_result = None
 
     with sync_playwright() as p:
         browser = p.chromium.launch(**get_playwright_launch_options())
@@ -858,15 +889,48 @@ def login_codex_via_browser(email, password, mail_client=None):
 
         if not auth_code:
             _screenshot(page, "codex_05_no_callback.png")
+            body_excerpt = _page_excerpt(page)
             logger.warning("[Codex] 未获取到 auth code，当前 URL: %s", page.url)
+            error_type, error_detail, retryable = _classify_oauth_failure(page.url, body_excerpt)
+            failure_result = {
+                "ok": False,
+                "bundle": None,
+                "error_type": error_type,
+                "error_detail": error_detail,
+                "retryable": retryable,
+                "current_url": page.url,
+                "body_excerpt": body_excerpt,
+            }
 
         browser.close()
 
     if not auth_code:
-        logger.error("[Codex] OAuth 登录失败: 未获取到 authorization code")
+        detail = (
+            failure_result.get("error_detail") if isinstance(failure_result, dict) else "未获取到 authorization code"
+        )
+        logger.error("[Codex] OAuth 登录失败: %s", detail)
+        if return_result:
+            return failure_result or {
+                "ok": False,
+                "bundle": None,
+                "error_type": "auth_code_missing",
+                "error_detail": "未获取到 authorization code",
+                "retryable": True,
+            }
         return None
 
-    return _exchange_auth_code(auth_code, code_verifier, fallback_email=email)
+    bundle = _exchange_auth_code(auth_code, code_verifier, fallback_email=email)
+    if return_result:
+        if bundle:
+            return {"ok": True, "bundle": bundle, "error_type": None, "error_detail": None, "retryable": False}
+        return {
+            "ok": False,
+            "bundle": None,
+            "error_type": "token_exchange_failed",
+            "error_detail": "Token 交换失败",
+            "retryable": True,
+        }
+    return bundle
 
 
 def login_codex_via_session():
