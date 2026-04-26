@@ -26,6 +26,7 @@ cp .env.example .env
 | `SUB2API_EMAIL` | Sub2API 管理员邮箱 | 启用 Sub2API 时必填 |
 | `SUB2API_PASSWORD` | Sub2API 管理员密码 | 启用 Sub2API 时必填 |
 | `SUB2API_GROUP` | Sub2API 分组名或分组 ID，多个用逗号分隔 | 启用 Sub2API 且希望自动加入分组时填写 |
+| `SUB2API_PROXY` | Sub2API 代理 ID 或名称 | 否；仅账号池同步新建账号时写入 `proxy_id` |
 | `SUB2API_CONCURRENCY` | Sub2API 新建账号默认并发数 | 否（默认 `10`） |
 | `SUB2API_PRIORITY` | Sub2API 新建账号默认优先级 | 否（默认 `1`） |
 | `SUB2API_RATE_MULTIPLIER` | Sub2API 新建账号默认倍率 | 否（默认 `1`） |
@@ -88,6 +89,7 @@ SUB2API_GROUP=12,Team Pool
 AutoTeam 现在可以为 **新创建** 的 Sub2API OpenAI OAuth 账号自动写入默认参数：
 
 ```dotenv
+SUB2API_PROXY=Residential Pool
 SUB2API_CONCURRENCY=10
 SUB2API_PRIORITY=1
 SUB2API_RATE_MULTIPLIER=1
@@ -100,12 +102,15 @@ SUB2API_OVERWRITE_ACCOUNT_SETTINGS=false
 
 行为说明：
 
-- **创建新账号时**：总是使用这些默认值
-- **更新已有账号时**：默认不覆盖你在 Sub2API 后台手动修改过的并发、优先级、倍率、模型白名单、WS mode、passthrough
-- 如果设置 `SUB2API_OVERWRITE_ACCOUNT_SETTINGS=true`，则每次同步都会强制覆盖这些字段
+- **创建新账号时**：总是使用这些默认值；如果填写 `SUB2API_PROXY`，会把代理名称解析为 `proxy_id` 后写入账号
+- **更新已有账号时**：默认不覆盖你在 Sub2API 后台手动修改过的并发、优先级、倍率、模型白名单、WS mode、passthrough；代理绑定不会覆盖或清空已有 `proxy_id`
+- 如果设置 `SUB2API_OVERWRITE_ACCOUNT_SETTINGS=true`，则每次同步都会强制覆盖这些字段（代理绑定仍只在新建账号时写入）
 
 补充：
 
+- `SUB2API_PROXY` 支持 **代理名称** 或 **代理 ID**；名称会通过 Sub2API 管理接口解析为账号创建请求里的 `proxy_id`
+- `SUB2API_PROXY` 只作用于账号池 active 账号同步新建远端账号；同步主号 Codex 到 Sub2API 时不使用该配置
+- `SUB2API_PROXY` 不是代理 URL，也不会影响 `PLAYWRIGHT_PROXY_URL` 或 AutoTeam 访问 Sub2API 管理 API 的网络路径
 - `SUB2API_MODEL_WHITELIST` 会转换成 `credentials.model_mapping`
 - 留空表示 **不管理** `model_mapping`，不会主动清空已有白名单
 - `SUB2API_OPENAI_WS_MODE=off` 会写入：
@@ -220,6 +225,6 @@ codex-{email}-{plan_type}-{hash}.json
 - CloudMail：登录 → 创建测试邮箱 → 删除
 - Cloudflare Temp Email：登录 → 创建测试邮箱 → 删除
 - CPA：获取认证文件列表
-- Sub2API：管理员登录 → 获取 OpenAI OAuth 账号列表 → 校验 `SUB2API_GROUP`（如已填写）
+- Sub2API：管理员登录 → 获取 OpenAI OAuth 账号列表 → 校验 `SUB2API_GROUP`（如已填写）；`SUB2API_PROXY` 名称会在同步创建账号时解析
 
 验证失败会提示具体哪个环节有问题，保存会被拒绝。
