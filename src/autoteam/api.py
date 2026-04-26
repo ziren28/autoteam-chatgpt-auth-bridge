@@ -2672,6 +2672,23 @@ class AutoCheckConfig(BaseModel):
     min_low: int = 2  # 触发轮转的最少账号数
 
 
+def _normalized_auto_check_config(cfg: AutoCheckConfig | dict[str, int]) -> dict[str, int]:
+    if isinstance(cfg, AutoCheckConfig):
+        interval = cfg.interval
+        threshold = cfg.threshold
+        min_low = cfg.min_low
+    else:
+        interval = cfg.get("interval", _auto_check_config.get("interval", _DEFAULT_INTERVAL))
+        threshold = cfg.get("threshold", _auto_check_config.get("threshold", _DEFAULT_THRESHOLD))
+        min_low = cfg.get("min_low", _auto_check_config.get("min_low", _DEFAULT_MIN_LOW))
+
+    return {
+        "interval": max(60, int(interval)),
+        "threshold": max(1, min(100, int(threshold))),
+        "min_low": max(1, int(min_low)),
+    }
+
+
 @app.get("/api/config/auto-check")
 def get_auto_check_config():
     """获取巡检配置"""
@@ -2680,13 +2697,25 @@ def get_auto_check_config():
 
 @app.put("/api/config/auto-check")
 def set_auto_check_config(cfg: AutoCheckConfig):
-    """修改巡检配置（运行时生效）"""
-    _auto_check_config["interval"] = max(60, cfg.interval)  # 最少 1 分钟
-    _auto_check_config["threshold"] = max(1, min(100, cfg.threshold))
-    _auto_check_config["min_low"] = max(1, cfg.min_low)
+    """修改巡检配置（运行时生效，并持久化到 .env）"""
+    from autoteam.setup_wizard import _write_env
+
+    normalized = _normalized_auto_check_config(cfg)
+    _auto_check_config.update(normalized)
+
+    persisted = {
+        "AUTO_CHECK_INTERVAL": str(normalized["interval"]),
+        "AUTO_CHECK_THRESHOLD": str(normalized["threshold"]),
+        "AUTO_CHECK_MIN_LOW": str(normalized["min_low"]),
+    }
+    for key, value in persisted.items():
+        os.environ[key] = value
+        _write_env(key, value)
+
+    _sync_runtime_env_reload_state()
     _auto_check_restart.set()  # 唤醒巡检线程，立即应用新配置
     logger.info(
-        "[巡检] 配置已更新: 间隔=%ds 阈值=%d%% 触发=%d个",
+        "[巡检] 配置已更新并持久化: 间隔=%ds 阈值=%d%% 触发=%d个",
         _auto_check_config["interval"],
         _auto_check_config["threshold"],
         _auto_check_config["min_low"],
