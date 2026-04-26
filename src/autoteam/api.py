@@ -2328,12 +2328,14 @@ def _kill_subprocess_group(proc: subprocess.Popen):
 
 def _run_playwright_probe(*args: str, timeout_seconds: float = 30):
     cmd = _playwright_probe_command(*args)
+    env = os.environ.copy()
+    env["AUTOTEAM_PROBE_MODE"] = "1"
     proc = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
-        env=os.environ.copy(),
+        env=env,
         start_new_session=True,
     )
     try:
@@ -2354,7 +2356,24 @@ def _run_playwright_probe(*args: str, timeout_seconds: float = 30):
 
     if not stdout:
         return {}
-    return json.loads(stdout)
+    return _parse_playwright_probe_stdout(stdout)
+
+
+def _parse_playwright_probe_stdout(stdout: str):
+    text = (stdout or "").strip()
+    if not text:
+        return {}
+
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    for line in reversed(lines):
+        if not line.startswith(("{", "[")):
+            continue
+        try:
+            return json.loads(line)
+        except json.JSONDecodeError:
+            continue
+
+    return json.loads(text)
 
 
 def _auto_check_team_member_count(timeout_seconds=30, retries=3):
@@ -2371,13 +2390,12 @@ def _auto_check_team_member_count(timeout_seconds=30, retries=3):
                     retries,
                 )
                 continue
-                logger.warning(
-                    "[巡检] 查询 Team 实际成员数超时（>%ss，已重试 %d 次），跳过本轮人数校验",
-                    timeout_seconds,
-                    retries,
-                )
-                return -1
-            continue
+            logger.warning(
+                "[巡检] 查询 Team 实际成员数超时（>%ss，已重试 %d 次），跳过本轮人数校验",
+                timeout_seconds,
+                retries,
+            )
+            return -1
         except Exception as exc:
             logger.warning("[巡检] 查询 Team 实际成员数失败: %s", exc)
             return -1

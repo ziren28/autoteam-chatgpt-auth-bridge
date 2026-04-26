@@ -1279,6 +1279,26 @@ def test_auto_check_team_member_count_retries_three_times_on_timeout(monkeypatch
     assert attempts["count"] == 3
 
 
+def test_parse_playwright_probe_stdout_uses_last_json_line():
+    stdout = """
+    [13:05:56] INFO     noisy log
+    some extra text
+    {"count": 5}
+    """
+
+    assert api._parse_playwright_probe_stdout(stdout) == {"count": 5}
+
+
+def test_auto_check_team_member_count_logs_after_final_timeout(monkeypatch, caplog):
+    monkeypatch.setattr(api, "_run_playwright_probe", lambda *args, **kwargs: (_ for _ in ()).throw(TimeoutError()))
+
+    with caplog.at_level(logging.WARNING):
+        result = api._auto_check_team_member_count(timeout_seconds=0.01, retries=1)
+
+    assert result == -1
+    assert "已重试 1 次" in caplog.text
+
+
 def test_run_playwright_probe_kills_process_group_on_timeout(monkeypatch):
     killed = []
 
