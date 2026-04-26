@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import subprocess
 import threading
 import time
 
@@ -1253,18 +1254,7 @@ def test_auto_check_triggers_cleanup_when_team_count_exceeds_target(tmp_path, mo
 
 
 def test_auto_check_team_member_count_times_out_without_blocking(monkeypatch):
-    class _SlowChatGPT:
-        def __init__(self):
-            self.browser = True
-
-        def start(self):
-            time.sleep(0.2)
-
-        def stop(self):
-            self.browser = False
-
-    monkeypatch.setattr("autoteam.chatgpt_api.ChatGPTTeamAPI", _SlowChatGPT)
-    monkeypatch.setattr("autoteam.manager.get_team_member_count", lambda _chatgpt: 5)
+    monkeypatch.setattr(api, "_run_playwright_probe", lambda *args, **kwargs: (_ for _ in ()).throw(TimeoutError()))
 
     started = time.monotonic()
     result = api._auto_check_team_member_count(timeout_seconds=0.05, retries=1)
@@ -1277,24 +1267,60 @@ def test_auto_check_team_member_count_times_out_without_blocking(monkeypatch):
 def test_auto_check_team_member_count_retries_three_times_on_timeout(monkeypatch):
     attempts = {"count": 0}
 
-    class _SlowChatGPT:
-        def __init__(self):
-            self.browser = True
+    def fake_probe(*args, **kwargs):
+        attempts["count"] += 1
+        raise TimeoutError()
 
-        def start(self):
-            attempts["count"] += 1
-            time.sleep(0.08)
-
-        def stop(self):
-            self.browser = False
-
-    monkeypatch.setattr("autoteam.chatgpt_api.ChatGPTTeamAPI", _SlowChatGPT)
-    monkeypatch.setattr("autoteam.manager.get_team_member_count", lambda _chatgpt: 5)
+    monkeypatch.setattr(api, "_run_playwright_probe", fake_probe)
 
     result = api._auto_check_team_member_count(timeout_seconds=0.01, retries=3)
 
     assert result == -1
     assert attempts["count"] == 3
+
+
+def test_run_playwright_probe_kills_process_group_on_timeout(monkeypatch):
+    killed = []
+
+    class _FakeProc:
+        def __init__(self):
+            self.pid = 1234
+
+        def communicate(self, timeout=None):
+            raise subprocess.TimeoutExpired(cmd="probe", timeout=timeout)
+
+        def kill(self):
+            killed.append("kill")
+
+    monkeypatch.setattr(api.subprocess, "Popen", lambda *args, **kwargs: _FakeProc())
+    monkeypatch.setattr(api.os, "killpg", lambda pid, sig: killed.append((pid, sig)))
+
+    with pytest.raises(TimeoutError):
+        api._run_playwright_probe("team-member-count", timeout_seconds=0.01)
+
+    assert killed[0][0] == 1234
+
+
+def test_playwright_executor_raises_after_timeout(monkeypatch):
+    executor = api._PlaywrightExecutor()
+
+    original_wait = threading.Event.wait
+
+    def fake_wait(self, timeout=None):
+        if timeout == 1:
+            return False
+        return original_wait(self, timeout)
+
+    monkeypatch.setattr(threading.Event, "wait", fake_wait)
+
+    try:
+        with pytest.raises(TimeoutError):
+            executor.run(lambda: None, timeout_seconds=1)
+
+        with pytest.raises(RuntimeError):
+            executor.run(lambda: None, timeout_seconds=1)
+    finally:
+        executor.stop()
 
 
 def test_auto_check_wait_returns_restart_soon_after_config_update(monkeypatch):

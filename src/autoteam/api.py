@@ -3,6 +3,9 @@
 import json
 import logging
 import os
+import signal
+import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -840,6 +843,7 @@ class _PlaywrightExecutor:
     def __init__(self):
         self._queue: _queue.Queue = _queue.Queue()
         self._thread: threading.Thread | None = None
+        self._broken_reason: str | None = None
 
     def _worker(self):
         while True:
@@ -855,17 +859,26 @@ class _PlaywrightExecutor:
                 result_event.set()
 
     def ensure_started(self):
+        if self._broken_reason:
+            raise RuntimeError(self._broken_reason)
         if self._thread is None or not self._thread.is_alive():
             self._thread = threading.Thread(target=self._worker, daemon=True)
             self._thread.start()
 
-    def run(self, func, *args, **kwargs):
+    def run(self, func, *args, timeout_seconds=300, **kwargs):
         """在专用线程中执行函数，阻塞等待结果"""
         self.ensure_started()
         result_event = threading.Event()
         result_holder: dict = {}
         self._queue.put((func, args, kwargs, result_event, result_holder))
-        result_event.wait(timeout=300)  # 最长等 5 分钟
+        if not result_event.wait(timeout=max(1, timeout_seconds)):
+            func_name = getattr(func, "__name__", repr(func))
+            self._broken_reason = (
+                f"Playwright 专用线程执行超时（>{timeout_seconds}s）: {func_name}；"
+                "为避免浏览器进程继续堆积，已拒绝后续专用线程任务，请重启服务"
+            )
+            logger.error("[API] %s", self._broken_reason)
+            raise TimeoutError(self._broken_reason)
         if "error" in result_holder:
             raise result_holder["error"]
         return result_holder.get("result")
@@ -874,7 +887,12 @@ class _PlaywrightExecutor:
         if self._thread and self._thread.is_alive():
             self._queue.put(None)
             self._thread.join(timeout=5)
-            self._thread = None
+            if self._thread.is_alive():
+                logger.warning("[API] Playwright 专用线程在停止时仍未退出")
+            else:
+                self._thread = None
+                self._queue = _queue.Queue()
+                self._broken_reason = None
 
 
 _pw_executor = _PlaywrightExecutor()
@@ -2294,34 +2312,57 @@ _auto_check_stop = threading.Event()
 _auto_check_restart = threading.Event()  # 配置变更时通知线程重启
 
 
+def _playwright_probe_command(*args: str) -> list[str]:
+    return [sys.executable, "-m", "autoteam.playwright_probe", *args]
+
+
+def _kill_subprocess_group(proc: subprocess.Popen):
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except Exception:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+
+
+def _run_playwright_probe(*args: str, timeout_seconds: float = 30):
+    cmd = _playwright_probe_command(*args)
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=os.environ.copy(),
+        start_new_session=True,
+    )
+    try:
+        stdout, stderr = proc.communicate(timeout=max(1.0, float(timeout_seconds)))
+    except subprocess.TimeoutExpired as exc:
+        _kill_subprocess_group(proc)
+        try:
+            proc.communicate(timeout=1)
+        except Exception:
+            pass
+        raise TimeoutError(f"Playwright probe timeout: {' '.join(args)}") from exc
+
+    stdout = (stdout or "").strip()
+    stderr = (stderr or "").strip()
+    if proc.returncode != 0:
+        detail = stderr or stdout or f"exit={proc.returncode}"
+        raise RuntimeError(detail)
+
+    if not stdout:
+        return {}
+    return json.loads(stdout)
+
+
 def _auto_check_team_member_count(timeout_seconds=30, retries=3):
     """查询 Team 实际成员数，供自动巡检的人数兜底判断使用。"""
     for attempt in range(1, max(1, retries) + 1):
-        result_holder: dict[str, object] = {}
-        done = threading.Event()
-
-        def _worker(result_holder=result_holder, done=done):
-            chatgpt = None
-            try:
-                from autoteam.chatgpt_api import ChatGPTTeamAPI
-                from autoteam.manager import get_team_member_count
-
-                chatgpt = ChatGPTTeamAPI()
-                chatgpt.start()
-                result_holder["count"] = get_team_member_count(chatgpt)
-            except Exception as exc:
-                result_holder["error"] = exc
-            finally:
-                try:
-                    if chatgpt and chatgpt.browser:
-                        chatgpt.stop()
-                except Exception:
-                    pass
-                done.set()
-
-        thread = threading.Thread(target=_worker, daemon=True)
-        thread.start()
-        if not done.wait(timeout=timeout_seconds):
+        try:
+            result = _run_playwright_probe("team-member-count", timeout_seconds=timeout_seconds)
+        except TimeoutError:
             if attempt < retries:
                 logger.warning(
                     "[巡检] 查询 Team 实际成员数超时（>%ss），准备重试第 %d/%d 次",
@@ -2330,19 +2371,19 @@ def _auto_check_team_member_count(timeout_seconds=30, retries=3):
                     retries,
                 )
                 continue
-            logger.warning(
-                "[巡检] 查询 Team 实际成员数超时（>%ss，已重试 %d 次），跳过本轮人数校验",
-                timeout_seconds,
-                retries,
-            )
-            return -1
-
-        if "error" in result_holder:
-            logger.warning("[巡检] 查询 Team 实际成员数失败: %s", result_holder["error"])
+                logger.warning(
+                    "[巡检] 查询 Team 实际成员数超时（>%ss，已重试 %d 次），跳过本轮人数校验",
+                    timeout_seconds,
+                    retries,
+                )
+                return -1
+            continue
+        except Exception as exc:
+            logger.warning("[巡检] 查询 Team 实际成员数失败: %s", exc)
             return -1
 
         try:
-            return int(result_holder.get("count", -1))
+            return int(result.get("count", -1))
         except Exception:
             return -1
 
@@ -2742,6 +2783,10 @@ def _start_auto_check():
 @app.on_event("shutdown")
 def _stop_auto_check():
     _auto_check_stop.set()
+    try:
+        _pw_executor.stop()
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------
