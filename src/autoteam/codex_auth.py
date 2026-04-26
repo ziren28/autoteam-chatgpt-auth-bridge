@@ -342,7 +342,18 @@ def _workspace_label_candidates(page):
     if not _is_workspace_selection_page(page):
         return []
 
-    selectors = ("button", "a", '[role="button"]', '[role="option"]')
+    selectors = (
+        "button",
+        "a",
+        '[role="button"]',
+        '[role="option"]',
+        '[aria-selected="true"]',
+        '[aria-selected="false"]',
+        "[data-state]",
+        "li",
+        "label",
+        "div",
+    )
     seen = set()
     candidates = []
     for selector in selectors:
@@ -364,6 +375,18 @@ def _workspace_label_candidates(page):
     return candidates
 
 
+def _click_workspace_locator(loc) -> bool:
+    try:
+        loc.click(timeout=3000)
+        return True
+    except Exception:
+        try:
+            loc.click(force=True, timeout=3000)
+            return True
+        except Exception:
+            return False
+
+
 def _select_team_workspace(page, workspace_name: str) -> bool:
     preferred_name = str(workspace_name or "").strip()
     if not preferred_name:
@@ -373,16 +396,29 @@ def _select_team_workspace(page, workspace_name: str) -> bool:
     for text, loc in _workspace_label_candidates(page):
         if text.strip().lower() != preferred_name_lower:
             continue
-        try:
-            loc.click(timeout=3000)
-        except Exception:
-            try:
-                loc.click(force=True, timeout=3000)
-            except Exception:
-                return False
+        if not _click_workspace_locator(loc):
+            continue
         logger.info("[Codex] 选择 Team workspace: %s", text)
         time.sleep(3)
         return True
+
+    # fallback: 某些页面里的 workspace 项是普通 div / span 包裹文本，不带 button/option role
+    for selector in (
+        f'text="{preferred_name}"',
+        f"text=/{re.escape(preferred_name)}/i",
+    ):
+        try:
+            loc = page.locator(selector).first
+            if not loc.is_visible(timeout=500):
+                continue
+            if not _click_workspace_locator(loc):
+                continue
+            logger.info("[Codex] 选择 Team workspace: %s", preferred_name)
+            time.sleep(3)
+            return True
+        except Exception:
+            continue
+
     return False
 
 
@@ -950,6 +986,21 @@ def login_codex_via_browser(email, password, mail_client=None, *, return_result=
         return None
 
     bundle = _exchange_auth_code(auth_code, code_verifier, fallback_email=email)
+    if bundle:
+        plan_type = str(bundle.get("plan_type") or "").lower()
+        if plan_type != "team":
+            detail = f"登录后 plan={plan_type or 'unknown'}，未进入 Team workspace"
+            logger.error("[Codex] OAuth 登录失败: %s", detail)
+            if return_result:
+                return {
+                    "ok": False,
+                    "bundle": None,
+                    "error_type": "non_team_plan",
+                    "error_detail": detail,
+                    "retryable": True,
+                }
+            return None
+
     if return_result:
         if bundle:
             return {"ok": True, "bundle": bundle, "error_type": None, "error_detail": None, "retryable": False}

@@ -125,6 +125,27 @@ def test_login_codex_with_result_stops_immediately_on_hard_failure(monkeypatch):
     assert result["attempts"] == 1
 
 
+def test_login_codex_with_result_rejects_non_team_bundle(monkeypatch):
+    def fake_login(email, password, mail_client=None, return_result=False):
+        assert return_result is True
+        return {
+            "ok": True,
+            "bundle": {"email": email, "plan_type": "free"},
+            "error_type": None,
+            "error_detail": None,
+            "retryable": False,
+        }
+
+    monkeypatch.setattr(manager, "login_codex_via_browser", fake_login)
+
+    result = manager._login_codex_with_result("user@example.com", "", max_attempts=1)
+
+    assert result["ok"] is False
+    assert result["bundle"] is None
+    assert result["error_type"] == "non_team_plan"
+    assert result["attempts"] == 1
+
+
 def test_cmd_check_skips_cooled_down_auth_pending_account(monkeypatch, caplog):
     monkeypatch.setattr(
         manager,

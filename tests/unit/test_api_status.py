@@ -355,6 +355,34 @@ def test_put_runtime_config_accepts_numeric_sub2api_proxy(monkeypatch):
     assert written["SUB2API_PROXY"] == "15"
 
 
+def test_post_account_login_rejects_non_team_plan(monkeypatch):
+    class _MailClient:
+        def login(self):
+            return None
+
+    monkeypatch.setattr(api, "_is_main_account_email", lambda _email: False)
+    monkeypatch.setattr("autoteam.accounts.load_accounts", lambda: [{"email": "user@example.com", "password": ""}])
+    monkeypatch.setattr(api, "_require_account_mail_configs", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(api, "_require_sync_target_configs", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("autoteam.mail_provider.get_mail_client_for_account", lambda _acc: _MailClient())
+    monkeypatch.setattr(
+        "autoteam.codex_auth.login_codex_via_browser",
+        lambda email, password, mail_client=None: {
+            "email": email,
+            "plan_type": "free",
+            "access_token": "token-1",
+        },
+    )
+    monkeypatch.setattr(
+        api,
+        "_start_task",
+        lambda _command, func, _params, *args, **kwargs: func(*args, **kwargs),
+    )
+
+    with pytest.raises(RuntimeError, match="未进入 Team workspace"):
+        api.post_account_login(api.LoginAccountParams(email="user@example.com"))
+
+
 def test_set_auto_check_config_persists_values_to_env(monkeypatch):
     written = {}
     restart_event = threading.Event()

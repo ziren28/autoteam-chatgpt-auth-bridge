@@ -308,10 +308,27 @@ def _login_codex_with_result(email: str, password: str, *, mail_client=None, max
     max_attempts = max(1, int(max_attempts))
 
     def _single_attempt() -> dict:
+        def _reject_non_team(bundle: dict | None) -> dict | None:
+            if not isinstance(bundle, dict) or not bundle:
+                return None
+            plan_type = str(bundle.get("plan_type") or "").lower()
+            if plan_type == "team":
+                return None
+            return {
+                "ok": False,
+                "bundle": None,
+                "error_type": "non_team_plan",
+                "error_detail": f"登录后 plan={plan_type or 'unknown'}，未进入 Team workspace",
+                "retryable": True,
+            }
+
         try:
             result = login_codex_via_browser(email, password, mail_client=mail_client, return_result=True)
         except TypeError:
             bundle = login_codex_via_browser(email, password, mail_client=mail_client)
+            non_team = _reject_non_team(bundle)
+            if non_team:
+                return non_team
             return {
                 "ok": bool(bundle),
                 "bundle": bundle,
@@ -329,7 +346,14 @@ def _login_codex_with_result(email: str, password: str, *, mail_client=None, max
             }
 
         if isinstance(result, dict) and "ok" in result:
+            non_team = _reject_non_team(result.get("bundle"))
+            if result.get("ok") and non_team:
+                return non_team
             return result
+
+        non_team = _reject_non_team(result if isinstance(result, dict) else None)
+        if non_team:
+            return non_team
 
         return {
             "ok": bool(result),

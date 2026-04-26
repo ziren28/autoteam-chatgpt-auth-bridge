@@ -1901,10 +1901,13 @@ def post_account_login(params: LoginAccountParams):
         mail_client.login()
         bundle = login_codex_via_browser(email, acc.get("password", ""), mail_client=mail_client)
         if bundle:
+            plan_type = str(bundle.get("plan_type") or "").lower()
+            if plan_type != "team":
+                raise RuntimeError(f"登录后 plan={plan_type or 'unknown'}，未进入 Team workspace")
             auth_file = save_auth_file(bundle)
             update_account(email, auth_file=auth_file)
             # 登录成功且是 team plan，自动标记为 active
-            if bundle.get("plan_type") == "team":
+            if plan_type == "team":
                 update_account(email, status=STATUS_ACTIVE, last_active_at=time.time())
                 # 查一下额度并保存快照
                 token = bundle.get("access_token")
