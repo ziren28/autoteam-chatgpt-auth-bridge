@@ -1659,16 +1659,50 @@ def post_main_codex_cancel():
     return {"message": "主号 Codex 登录已取消", "codex": _main_codex_status()}
 
 
+def _delete_main_codex_from_enabled_targets():
+    from autoteam.sync_targets import (
+        delete_main_codex_from_configured_targets,
+        describe_sync_targets,
+        get_enabled_sync_targets,
+    )
+
+    _require_sync_target_configs("删除主号 Codex 远端文件")
+
+    env = _current_runtime_env()
+    enabled_targets = get_enabled_sync_targets(env)
+    results = delete_main_codex_from_configured_targets()
+    deleted: list[str] = []
+    total_count = 0
+
+    for target in enabled_targets:
+        target_result = results.get(target) or {}
+        target_deleted = [str(item) for item in (target_result.get("deleted") or [])]
+        deleted.extend(target_deleted)
+
+        try:
+            target_count = int(target_result.get("count", len(target_deleted)) or 0)
+        except (TypeError, ValueError):
+            target_count = len(target_deleted)
+        total_count += target_count
+
+    target_label = describe_sync_targets(enabled_targets)
+    return {
+        "message": f"已从 {target_label} 删除 {total_count} 个主号认证文件",
+        "deleted": deleted,
+        "results": results,
+    }
+
+
+@app.post("/api/main-codex/delete-remote-files")
+def post_main_codex_delete_remote_files():
+    """删除已启用远端中已上传的主号 Codex 认证文件。"""
+    return _delete_main_codex_from_enabled_targets()
+
+
 @app.post("/api/main-codex/delete-cpa")
 def post_main_codex_delete_cpa():
-    """删除 CPA 中已上传的主号 Codex 认证文件。"""
-    from autoteam.cpa_sync import delete_main_codex_from_cpa
-
-    result = delete_main_codex_from_cpa()
-    return {
-        "message": f"已从 CPA 删除 {result['count']} 个主号认证文件",
-        "deleted": result["deleted"],
-    }
+    """兼容旧接口：删除已启用远端中的主号 Codex 认证文件。"""
+    return _delete_main_codex_from_enabled_targets()
 
 
 @app.post("/api/manual-account/start")
