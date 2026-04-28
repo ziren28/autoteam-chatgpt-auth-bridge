@@ -637,20 +637,23 @@ def _maybe_reload_runtime_config_from_env_file(*, force: bool = False):
     return True
 
 
-def _verify_runtime_integrations(previous_env: dict[str, str | None] | None = None):
+def _verify_runtime_integrations(
+    previous_env: dict[str, str | None] | None = None, *, env: dict[str, object] | None = None
+):
     from autoteam.mail_provider import get_mail_provider_name, get_mail_provider_prompt, get_mail_provider_required_keys
     from autoteam.setup_wizard import _verify_cpa, _verify_mail_provider, _verify_sub2api
 
     errors = []
-    mail_provider = get_mail_provider_name()
+    runtime_env = dict(env or os.environ)
+    mail_provider = get_mail_provider_name(runtime_env)
     mail_keys = tuple(get_mail_provider_required_keys(mail_provider))
     cpa_keys = ("CPA_URL", "CPA_KEY")
     sub2api_keys = ("SUB2API_URL", "SUB2API_EMAIL", "SUB2API_PASSWORD")
 
-    mail_values = [os.environ.get(key, "") for key in mail_keys]
-    cpa_values = [os.environ.get(key, "") for key in cpa_keys]
-    sub2api_values = [os.environ.get(key, "") for key in sub2api_keys]
-    sync_states = _effective_sync_target_states()
+    mail_values = [runtime_env.get(key, "") for key in mail_keys]
+    cpa_values = [runtime_env.get(key, "") for key in cpa_keys]
+    sub2api_values = [runtime_env.get(key, "") for key in sub2api_keys]
+    sync_states = _effective_sync_target_states(runtime_env)
 
     if mail_keys and all(mail_values) and not _verify_mail_provider(mail_provider):
         errors.append(f"{get_mail_provider_prompt(mail_provider)} 连接失败")
@@ -699,7 +702,7 @@ def _save_runtime_config(data: dict[str, str]):
             os.environ[key] = value
         _reload_runtime_config_modules()
 
-        verify_result = _verify_runtime_integrations(previous_env)
+        verify_result = _verify_runtime_integrations(previous_env, env=merged)
         if verify_result:
             _restore_runtime_env(previous_env)
             _reload_runtime_config_modules()
@@ -792,7 +795,7 @@ def put_runtime_config_source(config: SourceConfig):
                 os.environ.pop(key, None)
 
         _reload_runtime_config_modules()
-        verify_result = _verify_runtime_integrations(previous_env)
+        verify_result = _verify_runtime_integrations(previous_env, env=loaded_values)
         if verify_result:
             _restore_runtime_source_text(previous_exists, previous_content)
             _restore_runtime_env(previous_env)

@@ -355,6 +355,41 @@ def test_put_runtime_config_accepts_numeric_sub2api_proxy(monkeypatch):
     assert written["SUB2API_PROXY"] == "15"
 
 
+def test_put_runtime_config_disabling_cpa_skips_stale_cpa_validation(monkeypatch):
+    written = {}
+
+    monkeypatch.setattr("autoteam.setup_wizard._write_env", lambda key, value: written.setdefault(key, value))
+    monkeypatch.setattr(
+        "autoteam.setup_wizard._read_env",
+        lambda: {
+            "SYNC_TARGET_CPA": "true",
+            "CPA_URL": "http://127.0.0.1:8317",
+            "CPA_KEY": "old-key",
+            "API_KEY": "old-key",
+        },
+    )
+    monkeypatch.setattr("autoteam.setup_wizard._verify_mail_provider", lambda provider=None: True)
+    monkeypatch.setattr(
+        "autoteam.setup_wizard._verify_cpa",
+        lambda: (_ for _ in ()).throw(AssertionError("cpa verify should not run after disabling cpa sync")),
+    )
+    monkeypatch.setattr("importlib.reload", lambda module: module)
+    monkeypatch.setattr(api, "API_KEY", "old-key")
+    monkeypatch.setenv("API_KEY", "old-key")
+
+    result = api.put_runtime_config(
+        api.SetupConfig(
+            API_KEY="old-key",
+            SYNC_TARGET_CPA="false",
+            CPA_URL="http://127.0.0.1:8317",
+            CPA_KEY="old-key",
+        )
+    )
+
+    assert result["message"] == "配置保存成功"
+    assert written["SYNC_TARGET_CPA"] == "false"
+
+
 def test_post_account_login_rejects_non_team_plan(monkeypatch):
     class _MailClient:
         def login(self):
