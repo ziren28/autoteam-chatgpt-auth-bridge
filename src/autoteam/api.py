@@ -1192,12 +1192,47 @@ def _manual_account_status():
     return status
 
 
+_auto_sync_main_auth_after_admin_login = True
+
+
+def _build_main_auth_from_admin_login(api, info):
+    """普通 ChatGPT 登录完成后直接生成 CPA/sub2api 兼容主号认证文件。"""
+    if not api or not info:
+        return None
+    access_token = getattr(api, "access_token", "") or ""
+    if not access_token:
+        return None
+
+    from autoteam.codex_auth import chatgpt_session_to_auth_bundle, save_main_auth_file
+
+    bundle = chatgpt_session_to_auth_bundle(
+        {
+            "email": info.get("email", ""),
+            "session_token": info.get("session_token", ""),
+            "access_token": access_token,
+            "account_id": info.get("account_id", ""),
+            "plan_type": info.get("plan_type") or "team",
+        }
+    )
+    auth_file = save_main_auth_file(bundle)
+    info["main_auth_file"] = auth_file
+    return auth_file
+
+
 def _finish_admin_login(completed: dict):
     global _admin_login_api, _admin_login_step
     api = _admin_login_api
     info = None
     try:
         info = _pw_executor.run(api.complete_admin_login)
+        auth_file = _build_main_auth_from_admin_login(api, info)
+        if auth_file and _auto_sync_main_auth_after_admin_login:
+            try:
+                from autoteam.sync_targets import sync_main_codex_to_configured_targets
+
+                sync_main_codex_to_configured_targets(auth_file)
+            except Exception as exc:
+                logger.warning("[Admin] 普通登录生成主号认证文件成功，但同步远端失败: %s", exc)
     finally:
         if api:
             try:

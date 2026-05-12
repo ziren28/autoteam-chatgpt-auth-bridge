@@ -46,16 +46,82 @@ def _generate_pkce():
 
 def _parse_jwt_payload(token):
     """解析 JWT payload（不验证签名）"""
-    parts = token.split(".")
+    parts = str(token or "").split(".")
     if len(parts) < 2:
         return {}
     payload = parts[1]
     # 补齐 base64 padding
-    payload += "=" * (4 - len(payload) % 4)
+    payload += "=" * (-len(payload) % 4)
     try:
         return json.loads(base64.urlsafe_b64decode(payload))
     except Exception:
         return {}
+
+
+def _b64url_json(payload):
+    raw = json.dumps(payload, separators=(",", ":")).encode()
+    return base64.urlsafe_b64encode(raw).decode().rstrip("=")
+
+
+def _build_synthetic_codex_id_token(email="", account_id="", plan_type="", user_id="", expired=None):
+    if not account_id:
+        return ""
+    now = int(time.time())
+    exp = int(expired or (now + 90 * 24 * 60 * 60))
+    auth_info = {"chatgpt_account_id": account_id}
+    if plan_type:
+        auth_info["chatgpt_plan_type"] = plan_type
+    if user_id:
+        auth_info["chatgpt_user_id"] = user_id
+        auth_info["user_id"] = user_id
+    payload = {
+        "iat": now,
+        "exp": exp,
+        "https://api.openai.com/auth": auth_info,
+    }
+    if email:
+        payload["email"] = email
+    return f"{_b64url_json({'alg': 'none', 'typ': 'JWT', 'cpa_synthetic': True})}.{_b64url_json(payload)}."
+
+
+def chatgpt_session_to_auth_bundle(session_info):
+    """把普通 ChatGPT Web 登录态转换为 CPA/sub2api 兼容认证 bundle。
+
+    这条路径刻意跳过 Codex OAuth authorization-code 交换：
+    普通登录成功后读取 /api/auth/session 的 accessToken，再生成与 CPA 认证文件兼容的字段。
+    """
+    info = session_info or {}
+    access_token = info.get("access_token") or info.get("accessToken") or ""
+    if not access_token:
+        raise RuntimeError("普通登录完成但未获取到 ChatGPT access token")
+
+    token_payload = _parse_jwt_payload(access_token)
+    auth_claims = token_payload.get("https://api.openai.com/auth", {}) if isinstance(token_payload, dict) else {}
+    email = info.get("email") or token_payload.get("email", "")
+    account_id = info.get("account_id") or info.get("chatgpt_account_id") or auth_claims.get("chatgpt_account_id", "")
+    plan_type = info.get("plan_type") or info.get("chatgpt_plan_type") or auth_claims.get("chatgpt_plan_type", "unknown")
+    expired = info.get("expired") or token_payload.get("exp") or (time.time() + 3600)
+    user_id = info.get("user_id") or auth_claims.get("chatgpt_user_id") or auth_claims.get("user_id", "")
+    id_token = info.get("id_token") or info.get("idToken") or _build_synthetic_codex_id_token(
+        email=email,
+        account_id=account_id,
+        plan_type=plan_type,
+        user_id=user_id,
+        expired=expired,
+    )
+    id_token_synthetic = not (info.get("id_token") or info.get("idToken")) and bool(id_token)
+
+    return {
+        "access_token": access_token,
+        "refresh_token": info.get("refresh_token") or info.get("refreshToken") or "",
+        "id_token": id_token,
+        "account_id": account_id,
+        "email": email,
+        "plan_type": plan_type,
+        "session_token": info.get("session_token") or info.get("sessionToken") or "",
+        "expired": float(expired),
+        "id_token_synthetic": id_token_synthetic,
+    }
 
 
 def _screenshot(page, name):
@@ -160,6 +226,10 @@ def _write_auth_file(filepath, bundle):
         "expired": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(bundle.get("expired", 0))),
         "last_refresh": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
+    if bundle.get("session_token"):
+        auth_data["session_token"] = bundle.get("session_token", "")
+    if bundle.get("id_token_synthetic"):
+        auth_data["id_token_synthetic"] = True
 
     write_text(filepath, json.dumps(auth_data, indent=2))
     ensure_auth_file_permissions(filepath)
@@ -468,27 +538,41 @@ def _select_team_workspace(page, workspace_name: str) -> bool:
     return False
 
 
+def _plain_session_result(bundle, return_result=False):
+    plan_type = str(bundle.get("plan_type") or "").lower()
+    if plan_type != "team":
+        detail = f"登录后 plan={plan_type or 'unknown'}，未进入 Team workspace"
+        logger.error("[Codex] 普通 ChatGPT 登录失败: %s", detail)
+        if return_result:
+            return {
+                "ok": False,
+                "bundle": None,
+                "error_type": "non_team_plan",
+                "error_detail": detail,
+                "retryable": True,
+            }
+        return None
+    if return_result:
+        return {"ok": True, "bundle": bundle, "error_type": None, "error_detail": None, "retryable": False}
+    return bundle
+
+
 def login_codex_via_browser(
     email, password, mail_client=None, *, return_result=False, signup_profile: SignupProfile | None = None
 ):
     """
-    通过 Playwright 自动完成 Codex OAuth 登录。
+    通过 Playwright 自动完成普通 ChatGPT 登录，并生成 CPA/sub2api 兼容认证 bundle。
     mail_client: CloudMailClient 实例，用于自动读取登录验证码。
     返回 auth bundle: {access_token, refresh_token, id_token, account_id, email, plan_type}
     return_result=True 时返回:
       {ok: bool, bundle: dict|None, error_type: str|None, error_detail: str|None, retryable: bool}
     """
-    code_verifier, code_challenge = _generate_pkce()
-    state = secrets.token_urlsafe(16)
     _used_email_ids: set[int] = set()  # 记录已尝试过的邮件，避免重复提交同一封验证码邮件
 
     chatgpt_account_id = get_chatgpt_account_id()
 
-    auth_url = _build_auth_url(code_challenge, state)
+    logger.info("[Codex] 开始普通 ChatGPT 登录并生成兼容 auth: %s", email)
 
-    logger.info("[Codex] 开始 OAuth 登录: %s", email)
-
-    auth_code = None
     failure_result = None
 
     with sync_playwright() as p:
@@ -631,8 +715,99 @@ def login_codex_via_browser(
 
         # _account cookie 已在登录前注入
 
+        try:
+            access_result = _page.evaluate("""async () => {
+                try {
+                    const resp = await fetch('/api/auth/session');
+                    const data = await resp.json();
+                    return { ok: true, data };
+                } catch (err) {
+                    return { ok: false, error: String(err) };
+                }
+            }""")
+        except Exception as exc:
+            access_result = {"ok": False, "error": str(exc)}
+
+        session_token = ""
+        try:
+            cookies = context.cookies()
+            session_parts = {}
+            for cookie in cookies:
+                name = cookie.get("name", "")
+                if name == "__Secure-next-auth.session-token":
+                    session_token = cookie.get("value", "")
+                elif name.startswith("__Secure-next-auth.session-token."):
+                    session_parts[name.rsplit(".", 1)[-1]] = cookie.get("value", "")
+            if not session_token and session_parts:
+                session_token = "".join(session_parts[k] for k in sorted(session_parts))
+        except Exception:
+            session_token = ""
+
+        data = access_result.get("data", {}) if isinstance(access_result, dict) else {}
+        access_token = data.get("accessToken") or data.get("access_token") if isinstance(data, dict) else ""
+        if access_token and session_token:
+            try:
+                bundle = chatgpt_session_to_auth_bundle(
+                    {
+                        "email": email,
+                        "accessToken": access_token,
+                        "session_token": session_token,
+                        "account_id": chatgpt_account_id,
+                    }
+                )
+                browser.close()
+                return _plain_session_result(bundle, return_result=return_result)
+            except Exception as exc:
+                failure_result = {
+                    "ok": False,
+                    "bundle": None,
+                    "error_type": "plain_session_failed",
+                    "error_detail": str(exc),
+                    "retryable": True,
+                }
+        else:
+            failure_result = {
+                "ok": False,
+                "bundle": None,
+                "error_type": "access_token_missing",
+                "error_detail": "普通 ChatGPT 登录完成但未获取到 access token/session token",
+                "retryable": True,
+            }
+
         # 关闭 ChatGPT 页面但保留 context
         _page.close()
+
+        browser.close()
+
+    if return_result:
+        return failure_result or {
+            "ok": False,
+            "bundle": None,
+            "error_type": "access_token_missing",
+            "error_detail": "普通 ChatGPT 登录完成但未获取到 access token/session token",
+            "retryable": True,
+        }
+    return None
+
+
+def _legacy_login_codex_via_browser_oauth(
+    email, password, mail_client=None, *, return_result=False, signup_profile: SignupProfile | None = None
+):
+    """保留旧 Codex OAuth 登录实现作为回退/参考；默认账号登录不再调用。"""
+    code_verifier, code_challenge = _generate_pkce()
+    state = secrets.token_urlsafe(16)
+    _used_email_ids: set[int] = set()
+    chatgpt_account_id = get_chatgpt_account_id()
+    auth_url = _build_auth_url(code_challenge, state)
+    auth_code = None
+    failure_result = None
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(**get_playwright_launch_options())
+        context = browser.new_context(
+            viewport={"width": 1280, "height": 800},
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
+        )
 
         # 通过监听请求来捕获 OAuth callback redirect
         def on_request(request):
