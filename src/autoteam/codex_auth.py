@@ -20,6 +20,7 @@ from autoteam.admin_state import (
     get_chatgpt_workspace_name,
 )
 from autoteam.auth_storage import AUTH_DIR, ensure_auth_dir, ensure_auth_file_permissions
+from autoteam.chatgpt_api import ChatGPTTeamAPI
 from autoteam.config import get_playwright_launch_options
 from autoteam.signup_profile import SignupProfile, generate_signup_profile
 from autoteam.textio import write_text
@@ -1215,9 +1216,9 @@ def login_codex_via_session():
         result = flow.start()
         step = result.get("step")
         detail = result.get("detail")
-        logger.info("[Codex] 主号 session OAuth 初始结果: step=%s detail=%s", step, detail)
+        logger.info("[Codex] 主号 session 生成认证初始结果: step=%s detail=%s", step, detail)
         if step != "completed":
-            logger.warning("[Codex] 主号 session OAuth 未直接完成: step=%s detail=%s", step, detail)
+            logger.warning("[Codex] 主号 session 未直接完成认证生成: step=%s detail=%s", step, detail)
             return None
 
         info = flow.complete()
@@ -1505,8 +1506,6 @@ class SessionCodexAuthFlow:
         if not self.email:
             raise RuntimeError("缺少登录邮箱")
 
-        from autoteam.chatgpt_api import ChatGPTTeamAPI
-
         self.chatgpt = ChatGPTTeamAPI()
         self.chatgpt.start_with_session(
             self.session_token,
@@ -1514,12 +1513,19 @@ class SessionCodexAuthFlow:
             self.workspace_name,
             require_browser=True,
         )
-        self.page = self.chatgpt.context.new_page()
-        self._attach_callback_listeners()
-        self._inject_auth_cookies()
-        self.page.goto(self.auth_url, wait_until="domcontentloaded", timeout=60000)
-        time.sleep(3)
-        return self._advance()
+        self.chatgpt._fetch_access_token(allow_bearer_file=False)
+        if not getattr(self.chatgpt, "access_token", None):
+            raise RuntimeError("普通 ChatGPT session 未能获取 access token")
+        self._plain_bundle = chatgpt_session_to_auth_bundle(
+            {
+                "email": self.email,
+                "access_token": self.chatgpt.access_token,
+                "account_id": self.account_id,
+                "workspace_name": getattr(self.chatgpt, "workspace_name", "") or self.workspace_name,
+                "session_token": self.session_token,
+            }
+        )
+        return {"step": "completed", "detail": "plain_chatgpt_session"}
 
     def submit_password(self, password):
         self.password = password
@@ -1547,12 +1553,9 @@ class SessionCodexAuthFlow:
         return self._advance()
 
     def complete(self):
-        if not self.auth_code:
-            raise RuntimeError("未获取到 Codex authorization code")
-
-        bundle = _exchange_auth_code(self.auth_code, self.code_verifier, fallback_email=self.email)
+        bundle = getattr(self, "_plain_bundle", None)
         if not bundle:
-            raise RuntimeError("Codex token 交换失败")
+            raise RuntimeError("未生成普通 ChatGPT session 认证 bundle")
 
         filepath = self.auth_file_callback(bundle)
         return {

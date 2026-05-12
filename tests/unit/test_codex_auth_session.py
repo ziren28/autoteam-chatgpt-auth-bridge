@@ -1,25 +1,31 @@
 from autoteam import codex_auth
 
 
-def test_login_codex_via_session_uses_unified_flow_and_returns_bundle(monkeypatch):
-    events = []
+def test_login_codex_via_session_uses_chatgpt_session_bundle_without_oauth(monkeypatch):
+    calls = []
 
-    class FakeSessionCodexAuthFlow:
-        def __init__(self, **kwargs):
-            events.append(("init", kwargs))
+    class FakeChatGPTTeamAPI:
+        def __init__(self):
+            self.access_token = "access-token"
+            self.workspace_name = "Idapro"
 
-        def start(self):
-            events.append(("start", None))
-            return {"step": "completed", "detail": None}
+        def start_with_session(self, session_token, account_id, workspace_name, require_browser=False):
+            calls.append(("start_with_session", session_token, account_id, workspace_name, require_browser))
 
-        def complete(self):
-            events.append(("complete", None))
-            return {"bundle": {"email": "owner@example.com", "plan_type": "team"}}
+        def _fetch_access_token(self, allow_bearer_file=True):
+            calls.append(("fetch_access_token", allow_bearer_file))
+            return "session"
 
         def stop(self):
-            events.append(("stop", None))
+            calls.append(("stop",))
 
-    monkeypatch.setattr(codex_auth, "SessionCodexAuthFlow", FakeSessionCodexAuthFlow)
+    def fake_convert(info):
+        calls.append(("convert", info))
+        return {"email": info["email"], "account_id": info["account_id"], "plan_type": "team"}
+
+    monkeypatch.setattr(codex_auth, "ChatGPTTeamAPI", FakeChatGPTTeamAPI)
+    monkeypatch.setattr(codex_auth, "chatgpt_session_to_auth_bundle", fake_convert)
+    monkeypatch.setattr(codex_auth, "_exchange_auth_code", lambda *a, **k: (_ for _ in ()).throw(AssertionError("OAuth exchange must not run")))
     monkeypatch.setattr(codex_auth, "get_admin_email", lambda: "owner@example.com")
     monkeypatch.setattr(codex_auth, "get_admin_session_token", lambda: "session-token")
     monkeypatch.setattr(codex_auth, "get_chatgpt_account_id", lambda: "acc-1")
@@ -27,43 +33,55 @@ def test_login_codex_via_session_uses_unified_flow_and_returns_bundle(monkeypatc
 
     bundle = codex_auth.login_codex_via_session()
 
-    assert bundle == {"email": "owner@example.com", "plan_type": "team"}
-    assert events[0][0] == "init"
-    assert events[0][1]["email"] == "owner@example.com"
-    assert events[0][1]["session_token"] == "session-token"
-    assert events[0][1]["account_id"] == "acc-1"
-    assert events[0][1]["workspace_name"] == "Idapro"
-    assert callable(events[0][1]["auth_file_callback"])
-    assert [name for name, _ in events[1:]] == ["start", "complete", "stop"]
+    assert bundle == {"email": "owner@example.com", "account_id": "acc-1", "plan_type": "team"}
+    assert calls[0] == ("start_with_session", "session-token", "acc-1", "Idapro", True)
+    assert calls[1] == ("fetch_access_token", False)
+    assert calls[2][0] == "convert"
+    assert calls[2][1]["access_token"] == "access-token"
+    assert calls[2][1]["session_token"] == "session-token"
+    assert calls[-1] == ("stop",)
 
 
-def test_login_codex_via_session_returns_none_when_flow_requires_more_steps(monkeypatch):
-    events = []
+def test_session_codex_auth_flow_start_completes_from_plain_session_without_auth_url(monkeypatch):
+    calls = []
 
-    class FakeSessionCodexAuthFlow:
-        def __init__(self, **kwargs):
-            events.append(("init", kwargs))
+    class FakeChatGPTTeamAPI:
+        def __init__(self):
+            self.access_token = "access-token"
+            self.workspace_name = "Idapro"
 
-        def start(self):
-            events.append(("start", None))
-            return {"step": "email_required", "detail": "https://auth.openai.com/login"}
+        def start_with_session(self, session_token, account_id, workspace_name, require_browser=False):
+            calls.append(("start_with_session", session_token, account_id, workspace_name, require_browser))
 
-        def complete(self):
-            raise AssertionError("complete should not be called")
+        def _fetch_access_token(self, allow_bearer_file=True):
+            calls.append(("fetch_access_token", allow_bearer_file))
+            return "session"
 
         def stop(self):
-            events.append(("stop", None))
+            calls.append(("stop",))
 
-    monkeypatch.setattr(codex_auth, "SessionCodexAuthFlow", FakeSessionCodexAuthFlow)
-    monkeypatch.setattr(codex_auth, "get_admin_email", lambda: "owner@example.com")
-    monkeypatch.setattr(codex_auth, "get_admin_session_token", lambda: "session-token")
-    monkeypatch.setattr(codex_auth, "get_chatgpt_account_id", lambda: "acc-1")
-    monkeypatch.setattr(codex_auth, "get_chatgpt_workspace_name", lambda: "Idapro")
+    monkeypatch.setattr(codex_auth, "ChatGPTTeamAPI", FakeChatGPTTeamAPI)
+    monkeypatch.setattr(codex_auth, "chatgpt_session_to_auth_bundle", lambda info: {**info, "plan_type": "team"})
+    monkeypatch.setattr(codex_auth, "_exchange_auth_code", lambda *a, **k: (_ for _ in ()).throw(AssertionError("OAuth exchange must not run")))
 
-    bundle = codex_auth.login_codex_via_session()
+    flow = codex_auth.SessionCodexAuthFlow(
+        email="owner@example.com",
+        session_token="session-token",
+        account_id="acc-1",
+        workspace_name="Idapro",
+        auth_file_callback=lambda bundle: "/tmp/auth.json",
+    )
 
-    assert bundle is None
-    assert [name for name, _ in events[1:]] == ["start", "stop"]
+    result = flow.start()
+    info = flow.complete()
+    flow.stop()
+
+    assert result == {"step": "completed", "detail": "plain_chatgpt_session"}
+    assert info["auth_file"] == "/tmp/auth.json"
+    assert info["bundle"]["access_token"] == "access-token"
+    assert calls[0] == ("start_with_session", "session-token", "acc-1", "Idapro", True)
+    assert calls[1] == ("fetch_access_token", False)
+    assert calls[-1] == ("stop",)
 
 
 def test_refresh_main_auth_file_saves_bundle_from_session_login(monkeypatch):
